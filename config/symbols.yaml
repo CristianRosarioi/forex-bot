@@ -1,0 +1,72 @@
+# Configuración por símbolo
+# Spread en pips para forex, en puntos para índices
+symbols:
+  EURUSD:
+    enabled: true
+    type: forex
+    spread_max: 2.0
+    sessions: [london, new_york, overlap]
+    risk_pct: 0.5
+
+  GBPUSD:
+    enabled: true
+    type: forex
+    spread_max: 2.5
+    sessions: [london, new_york, overlap]
+    risk_pct: 0.5
+
+  USDJPY:
+    enabled: true
+    type: forex
+    spread_max: 2.0
+    sessions: [tokyo, new_york, overlap]
+    risk_pct: 0.5
+
+  AUDUSD:
+    enabled: true
+    type: forex
+    spread_max: 2.5
+    sessions: [tokyo, london, new_york]
+    risk_pct: 0.5
+
+  NZDUSD:
+    enabled: true
+    type: forex
+    spread_max: 3.0
+    sessions: [tokyo, new_york]
+    risk_pct: 0.5
+
+  USDCAD:
+    enabled: true
+    type: forex
+    spread_max: 2.5
+    sessions: [new_york, overlap]
+    risk_pct: 0.5
+
+  GBPJPY:
+    enabled: true
+    type: forex
+    spread_max: 4.0
+    sessions: [london, overlap]
+    risk_pct: 0.3  # par volátil → menor riesgo
+
+  EURGBP:
+    enabled: true
+    type: forex
+    spread_max: 2.0
+    sessions: [london]
+    risk_pct: 0.5
+
+  US500:
+    enabled: false  # activar cuando esté probado
+    type: index
+    spread_max: 50  # puntos
+    sessions: [new_york]
+    risk_pct: 0.3
+
+  NAS100:
+    enabled: false
+    type: index
+    spread_max: 100
+    sessions: [new_york]
+    risk_pct: 0.3
