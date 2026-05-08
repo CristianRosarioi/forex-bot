@@ -152,7 +152,14 @@ class EconomicCalendar:
             return None
 
     def is_blocked_window(self, currency: str, at_time: datetime | None = None) -> bool:
-        """Verifica si estamos en ventana de bloqueo por evento High de esta currency."""
+        """Verifica si estamos en ventana de bloqueo por evento High de esta currency.
+
+        H-05: Si no se ha realizado ningún fetch (_last_fetch is None), retorna True
+        como medida fail-closed (no operamos si no tenemos datos del calendario).
+        """
+        # H-05: fail-closed guard — no data means block all trading
+        if self._last_fetch is None:
+            return True
         t = at_time or datetime.now(timezone.utc)
         with self._lock:
             events = list(self._events)
@@ -170,7 +177,13 @@ class EconomicCalendar:
         return False
 
     def is_blocked_for_symbol(self, symbol: str, at_time: datetime | None = None) -> bool:
-        """Verifica si el símbolo está bloqueado por algún evento de sus currencies."""
+        """Verifica si el símbolo está bloqueado por algún evento de sus currencies.
+
+        H-05: Si no se ha realizado ningún fetch exitoso, bloquea todo el trading.
+        """
+        if self._last_fetch is None:
+            logger.warning("EconomicCalendar: no successful fetch yet — blocking all trading (fail-safe)")
+            return True
         currencies = _SYMBOL_CURRENCIES.get(symbol.upper(), [])
         return any(self.is_blocked_window(c, at_time) for c in currencies)
 
