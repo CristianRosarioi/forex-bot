@@ -6,6 +6,7 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -22,13 +23,17 @@ _BLOCK_BEFORE_MINUTES = 30
 _BLOCK_AFTER_MINUTES = 60
 _REFRESH_INTERVAL_HOURS = 12
 
+# L-01: Forex Factory publishes times in US Eastern Time (EST/EDT)
+_FF_TIMEZONE = ZoneInfo("America/New_York")
+
 # Mapeo símbolo -> currencies que le afectan
 _SYMBOL_CURRENCIES: dict[str, list[str]] = {
     "EURUSD": ["EUR", "USD"], "GBPUSD": ["GBP", "USD"],
     "USDJPY": ["USD", "JPY"], "AUDUSD": ["AUD", "USD"],
     "NZDUSD": ["NZD", "USD"], "USDCAD": ["USD", "CAD"],
     "GBPJPY": ["GBP", "JPY"], "EURGBP": ["EUR", "GBP"],
-    "EURJPY": ["EUR", "JPY"], "USDCHF": ["USD", "CHF"],
+    "EURJPY": ["EUR", "JPY"],
+    "USDCHF": ["USD", "CHF"],  # L-04: added USDCHF
     "US500":  ["USD"], "NAS100": ["USD"],
 }
 
@@ -129,7 +134,11 @@ class EconomicCalendar:
         return events
 
     def _parse_ff_datetime(self, dt_str: str) -> datetime | None:
-        """Parsea fechas del feed de Forex Factory."""
+        """L-01: Parsea fechas del feed de Forex Factory.
+
+        Forex Factory publica los tiempos en US Eastern Time (EST/EDT).
+        Convierte a UTC usando zoneinfo para manejar correctamente DST.
+        """
         # Formatos posibles: "January 15, 2025 10:30am", "January 15, 2025 All Day"
         formats = [
             "%B %d, %Y %I:%M%p",
@@ -139,15 +148,17 @@ class EconomicCalendar:
         dt_str = dt_str.replace("am", "AM").replace("pm", "PM")
         for fmt in formats:
             try:
-                return datetime.strptime(dt_str, fmt).replace(tzinfo=timezone.utc)
+                dt_naive = datetime.strptime(dt_str, fmt)
+                # Forex Factory times are in US Eastern Time (EST/EDT)
+                return dt_naive.replace(tzinfo=_FF_TIMEZONE).astimezone(timezone.utc)
             except ValueError:
                 continue
-        # "All Day" o formato desconocido — usar mediodía UTC del primer token de fecha
+        # "All Day" or unknown format — use noon Eastern (= 17:00 UTC in EST, 16:00 EDT)
         try:
             parts = dt_str.split()
             date_part = " ".join(parts[:3]).rstrip(",")
-            return datetime.strptime(date_part, "%B %d %Y").replace(
-                hour=12, tzinfo=timezone.utc)
+            dt_naive = datetime.strptime(date_part, "%B %d %Y").replace(hour=12)
+            return dt_naive.replace(tzinfo=_FF_TIMEZONE).astimezone(timezone.utc)
         except Exception:
             return None
 
