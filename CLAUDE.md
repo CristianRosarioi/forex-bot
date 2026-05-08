@@ -68,6 +68,39 @@ El modo se controla con la variable de entorno BOT_MODE en .env.
 - strategy-builder: especialista en crear nuevas estrategias como plugins
 - debugger: diagnóstico de errores en producción
 
+## Arquitectura de Análisis (Phase 5)
+
+### bot/analysis/
+- **swing.py** — Detección fractal de swing highs/lows (SwingPoint, detect_swings, get_swing_pairs_for_levels)
+- **structure.py** — Market structure: BOS, CHoCH, HH/HL/LH/LL classification (analyze_structure)
+- **levels.py** — LevelManager: detecta niveles S/R desde swing pairs, marca breaks, flip_active tras ruptura
+- **trend.py** — TrendBias combinando H4 + D1 structure state (confidence: 1.0 aligned, 0.5 ranging, 0.3 conflict)
+- **volume.py** — VolumeProfile: ratio tick_volume actual vs media histórica (quality: high/normal/low)
+
+### bot/strategy/
+- **base.py** — BaseStrategy (ABC, stateless), StrategyContext, Signal dataclass
+- **registry.py** — StrategyRegistry: registro de plugins, get_all_enabled(), load_default_strategies()
+- **retest.py** — RetestStrategy: entry on flip-active level retest, rejection candle, body >= 40%, 2:1 RR
+- **breakout.py** — (stub, pendiente)
+- **fade_failure.py** — (stub, pendiente)
+
+### bot/core/engine.py
+TradingEngine: orquesta el ciclo de vida completo.
+- Suscribe a BAR_CLOSED, filtra M15/H1
+- Pipeline por bar: swings → structure → levels → trend → volume → StrategyContext
+- Por cada estrategia: validate() obligatorio → persist signal (acted_on=False) → publish/log
+- SHADOW: nunca llama a bot/execution/
+
+### Flujo de una Señal (SHADOW mode)
+1. MarketDataFeed publica BAR_CLOSED (M15/H1)
+2. TradingEngine._on_bar_closed → _process_bar
+3. Construye StrategyContext con toda la analisis
+4. RetestStrategy.analyze(ctx) → Signal | None
+5. Si signal: OrderValidator.validate() (OBLIGATORIO)
+6. Persiste en signals table (acted_on=False, rejection_reason si aplica)
+7. Si approved: publica SIGNAL_GENERATED al EventBus (Telegram lo recoge)
+8. SHADOW: NUNCA ejecuta ordenes
+
 ## Workflow de Desarrollo
 1. Cada feature en su propia rama (feature/nombre)
 2. Antes de mergear a main, correr /run-audit
