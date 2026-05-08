@@ -21,6 +21,12 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# L-06: Required fields for account_state dict
+_REQUIRED_ACCOUNT_FIELDS = {
+    "balance", "equity", "initial_balance",
+    "day_start_balance", "week_start_balance", "month_start_balance"
+}
+
 
 @dataclass
 class OrderRequest:
@@ -28,7 +34,7 @@ class OrderRequest:
     symbol: str
     direction: str          # BUY / SELL
     entry_price: float
-    sl_price: float         # OBLIGATORIO — nunca None
+    sl_price: float | None  # L-03: None-able so callers can pass None and get CRITICAL rejection
     tp_price: float | None
     signal_id: int | None
     strategy_name: str
@@ -64,6 +70,7 @@ class OrderValidator:
         market_calendar=None,     # MarketCalendar — opcional para tests
         economic_calendar=None,   # EconomicCalendar — opcional para tests
         symbol_config: dict | None = None,  # config de symbols.yaml
+        bot_mode: str | None = None,  # C-04: bot mode for calendar enforcement
     ) -> None:
         self._settings = settings
         self._trades = trade_repo
@@ -76,6 +83,20 @@ class OrderValidator:
         self._eco_calendar = economic_calendar
         self._symbol_config = symbol_config or {}
 
+        # C-04: enforce calendar requirements in DEMO/LIVE modes
+        if bot_mode in ("DEMO", "LIVE"):
+            if market_calendar is None:
+                raise ValueError(f"market_calendar is required in {bot_mode} mode")
+            if economic_calendar is None:
+                raise ValueError(f"economic_calendar is required in {bot_mode} mode")
+        self._bot_mode = bot_mode
+
+        # Warn when calendars are absent (regardless of mode)
+        if market_calendar is None:
+            logger.warning("market_calendar is None — session/weekend checks disabled")
+        if economic_calendar is None:
+            logger.warning("economic_calendar is None — news event checks disabled")
+
     def validate(self, request: OrderRequest, account_state: dict) -> ValidationResult:
         """Ejecuta el pipeline completo de validación.
 
@@ -87,10 +108,28 @@ class OrderValidator:
 
         Returns:
             ValidationResult con approved=True y calculated_lots si pasa todo.
+
+        Raises:
+            ValueError: Si account_state faltan campos requeridos.
         """
+        # L-06: validate required account fields first
+        missing = _REQUIRED_ACCOUNT_FIELDS - account_state.keys()
+        if missing:
+            raise ValueError(f"account_state missing required fields: {missing}")
+
         logger.info("Validating order: %s %s %s entry=%s sl=%s",
                     request.strategy_name, request.symbol, request.direction,
                     request.entry_price, request.sl_price)
+
+        # H-01: fetch active pause ONCE for the whole pipeline (fail-closed on DB error)
+        try:
+            active_pause = self._limits.get_active_pause()
+        except Exception:
+            logger.exception("Could not fetch active pause — blocking as fail-safe")
+            return self._reject(
+                "Pause state unavailable (DB error) — blocking as fail-safe",
+                "CRITICAL", [], request
+            )
 
         # ── 1. SL OBLIGATORIO ──────────────────────────────────────────
         sl_check = self._check_sl(request)
@@ -115,12 +154,12 @@ class OrderValidator:
                 return self._reject(eco_check.reason, eco_check.severity, [eco_check], request)
 
         # ── 5. KILL SWITCH ACTIVO ──────────────────────────────────────
-        ks_check = self._check_kill_switch_active()
+        ks_check = self._check_kill_switch_active(active_pause)
         if ks_check is not None:
             return self._reject(ks_check.reason, ks_check.severity, [ks_check], request)
 
         # ── 6. PAUSAS ACTIVAS ──────────────────────────────────────────
-        pause_check = self._check_pause_active()
+        pause_check = self._check_pause_active(active_pause)
         if pause_check is not None:
             return self._reject(pause_check.reason, pause_check.severity, [pause_check], request)
 
@@ -166,16 +205,7 @@ class OrderValidator:
         # ── 9. APROBADO ────────────────────────────────────────────────
         logger.info("Order APPROVED: %s %s %s lots=%s",
                     request.symbol, request.direction, request.strategy_name, lots)
-        self._bus.publish(EventType.SIGNAL_GENERATED, {
-            "symbol": request.symbol,
-            "timeframe": "unknown",
-            "direction": request.direction,
-            "strategy_name": request.strategy_name,
-            "entry_price": request.entry_price,
-            "sl_price": request.sl_price,
-            "tp_price": request.tp_price,
-            "reason": f"Validated by OrderValidator",
-        })
+        # L-05: validator does NOT publish SIGNAL_GENERATED — that's the strategy's responsibility
         return ValidationResult(approved=True, calculated_lots=lots)
 
     # ──────────────────────────────────────────────
@@ -234,38 +264,42 @@ class OrderValidator:
             )
         return None
 
-    def _check_kill_switch_active(self) -> LimitCheckResult | None:
-        """Verifica si hay un evento KILL_SWITCH activo en bot_events recientes."""
-        # La señal de kill switch se persiste via log_event/EventBus.
-        # Aquí verificamos si hay una pausa CRITICAL activa que indique kill switch.
-        pause = self._limits.get_active_pause()
-        if pause and pause.severity == "CRITICAL":
+    def _check_kill_switch_active(self, active_pause) -> LimitCheckResult | None:
+        """H-01/C-03: Verifica si hay un kill switch CRITICAL activo.
+
+        Recibe active_pause ya cargado desde validate() para evitar doble consulta a DB.
+        """
+        if active_pause and active_pause.severity == "CRITICAL":
             return LimitCheckResult(
                 passed=False, check_name="kill_switch_active",
-                reason=f"Kill switch active: {pause.reason}",
+                reason=f"Kill switch active: {active_pause.reason}",
                 severity="CRITICAL",
             )
         return None
 
-    def _check_pause_active(self) -> LimitCheckResult | None:
+    def _check_pause_active(self, active_pause) -> LimitCheckResult | None:
+        """H-01: Verifica si hay una pausa activa de riesgo.
+
+        Recibe active_pause ya cargado desde validate() para evitar doble consulta a DB.
+        """
         if self._limits.is_paused():
-            pause = self._limits.get_active_pause()
-            reason = pause.reason if pause else "Active risk pause"
+            reason = active_pause.reason if active_pause else "Active risk pause"
             return LimitCheckResult(
                 passed=False, check_name="pause_active",
                 reason=reason, severity="ERROR",
-                resume_at=pause.resume_at if pause else None,
+                resume_at=active_pause.resume_at if active_pause else None,
             )
         return None
 
     def _get_current_spread(self, symbol: str) -> float | None:
-        """Intenta obtener el spread actual de MT5. Retorna None si no disponible."""
+        """H-04: Obtiene el spread actual de MT5 en pips. Retorna None si no disponible."""
         try:
             import MetaTrader5 as mt5
             info = mt5.symbol_info(symbol)
             if info is not None:
-                # spread en puntos, convertir a pips
-                return info.spread * info.point * 10
+                from bot.risk.sizing import _JPY_PAIRS
+                pip_size = 0.01 if symbol.upper() in _JPY_PAIRS else 0.0001
+                return (info.spread * info.point) / pip_size
         except Exception:
             pass
         return None

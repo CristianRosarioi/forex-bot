@@ -131,27 +131,35 @@ class RiskLimits:
             )
         return LimitCheckResult(passed=True, check_name="monthly_drawdown")
 
-    def check_kill_switch(self, current_balance: float, initial_balance: float) -> LimitCheckResult:
+    def check_kill_switch(self, current_equity: float, initial_balance: float) -> LimitCheckResult:
+        """Verifica si el equity ha caído por debajo del umbral de kill switch.
+
+        Args:
+            current_equity: Equity actual de la cuenta (incluye pérdidas no realizadas).
+            initial_balance: Balance inicial de referencia.
+        """
         if initial_balance <= 0:
             return LimitCheckResult(passed=True, check_name="kill_switch")
-        balance_pct = current_balance / initial_balance * 100
+        balance_pct = current_equity / initial_balance * 100
         threshold = self._s.kill_switch_balance_pct
         if balance_pct < threshold:
-            msg = f"Kill switch triggered: balance {balance_pct:.1f}% of initial (threshold {threshold}%)"
+            msg = f"Kill switch triggered: equity {balance_pct:.1f}% of initial (threshold {threshold}%)"
             logger.critical(msg)
             log_event(
                 event_type=EventType.KILL_SWITCH_TRIGGERED,
                 severity="CRITICAL",
                 module=__name__,
                 message=msg,
-                context={"current_balance": current_balance, "initial_balance": initial_balance,
+                context={"current_equity": current_equity, "initial_balance": initial_balance,
                          "balance_pct": balance_pct, "threshold": threshold},
             )
             self._bus.publish(EventType.KILL_SWITCH_TRIGGERED, {
-                "balance": current_balance,
+                "balance": current_equity,
                 "initial_balance": initial_balance,
                 "balance_pct": balance_pct,
             })
+            # C-01: persist a CRITICAL permanent pause so is_paused() and _check_kill_switch_active() block future orders
+            self.pause_until(resume_at=None, reason=msg, severity="CRITICAL")
             return LimitCheckResult(
                 passed=False,
                 check_name="kill_switch",
@@ -201,7 +209,8 @@ class RiskLimits:
             self.check_daily_drawdown(current_equity, day_start_balance),
             self.check_weekly_drawdown(current_equity, week_start_balance),
             self.check_monthly_drawdown(current_equity, month_start_balance),
-            self.check_kill_switch(current_balance, initial_balance),
+            # M-03: pass current_equity (not current_balance) to kill switch
+            self.check_kill_switch(current_equity, initial_balance),
             self.check_correlation_limit(symbol, direction),
         ]
         return [r for r in results if not r.passed]
@@ -211,19 +220,31 @@ class RiskLimits:
     # ──────────────────────────────────────────────
 
     def is_paused(self) -> bool:
+        """Verifica si hay una pausa de riesgo activa.
+
+        C-01b: resume_at=None significa pausa permanente (siempre True).
+        C-02: En caso de error de DB, retorna True (fail-closed).
+        M-06: get_session() hace commit automático al salir, por lo que
+              deactivate_all() queda persistido.
+        """
         try:
             with get_session() as session:
                 repo = RiskPauseRepository(session)
                 pause = repo.get_active()
                 if pause is None:
                     return False
-                if pause.resume_at and datetime.now(timezone.utc) >= pause.resume_at:
+                # C-01b: permanent pause (resume_at is None) → always paused
+                if pause.resume_at is None:
+                    return True
+                # Expired pause → deactivate (get_session commits on exit)
+                if datetime.now(timezone.utc) >= pause.resume_at:
                     repo.deactivate_all()
                     return False
                 return True
         except Exception:
-            logger.exception("Could not check risk pause state")
-            return False
+            # C-02: fail-closed — if we can't check, assume paused
+            logger.exception("Could not check risk pause state — assuming PAUSED (fail-safe)")
+            return True
 
     def get_active_pause(self):
         try:
@@ -284,8 +305,9 @@ def _next_midnight_utc() -> datetime:
     return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
 def _next_monday_utc() -> datetime:
+    """H-02: from Monday, next Monday is exactly 7 days ahead (not 0)."""
     now = datetime.now(timezone.utc)
-    days_ahead = 7 - now.weekday()
+    days_ahead = (7 - now.weekday()) % 7 or 7
     return (now + timedelta(days=days_ahead)).replace(hour=0, minute=0, second=0, microsecond=0)
 
 def _next_month_start_utc() -> datetime:
