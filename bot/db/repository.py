@@ -17,6 +17,7 @@ from bot.db.models import (
     DrawdownSnapshot,
     BotEvent,
     MT5ConnectionLog,
+    RiskPause,
 )
 
 
@@ -231,10 +232,23 @@ class TradeRepository:
         return self.session.scalar(stmt)
 
     def get_today(self) -> list[Trade]:
-        """Retorna los trades abiertos hoy (opened_at >= inicio del día UTC)."""
+        """Retorna los trades CERRADOS hoy (closed_at en el día UTC actual).
+
+        NEW-04: el filtro usa closed_at (no opened_at) para contar únicamente
+        operaciones que se completaron hoy. Esto evita:
+          - Contar un trade abierto ayer y cerrado hoy como "de ayer"
+          - Contar un trade abierto hoy pero aún abierto (open position)
+
+        Semántica: "¿cuántas operaciones completamos hoy?" — que es exactamente
+        lo que check_daily_trades_limit() necesita para max_daily_trades.
+
+        Nota: el modelo Trade no tiene campo status; se usa closed_at IS NOT NULL
+        y closed_at >= inicio del día UTC como indicador de trade completado hoy.
+        """
         stmt = select(Trade).where(
-            Trade.opened_at >= _today_start()
-        ).order_by(Trade.opened_at.asc())
+            Trade.closed_at >= _today_start(),
+            Trade.closed_at.isnot(None),
+        ).order_by(Trade.closed_at.asc())
         return list(self.session.scalars(stmt).all())
 
     def get_this_week(self) -> list[Trade]:
@@ -254,8 +268,14 @@ class TradeRepository:
     def get_consecutive_losses(self) -> int:
         """Cuenta las pérdidas consecutivas desde el último trade cerrado hacia atrás.
 
+        M-05: Lógica de clasificación:
+        - pnl_currency > 0 → win (resetea el contador)
+        - pnl_currency < 0 → loss (incrementa el contador)
+        - pnl_currency == 0 (breakeven) → IGNORADO (ni win ni loss, continúa contando)
+          Un trade breakeven no interrumpe una racha de pérdidas.
+
         Itera desde el trade más reciente hacia el más antiguo hasta encontrar
-        un trade ganador (pnl_currency >= 0) o llegar al inicio.
+        un trade ganador (pnl_currency > 0) o llegar al inicio.
 
         Returns:
             Número de pérdidas consecutivas al final de la serie.
@@ -272,8 +292,10 @@ class TradeRepository:
             pnl = float(trade.pnl_currency) if trade.pnl_currency is not None else 0.0
             if pnl < 0:
                 count += 1
-            else:
+            elif pnl > 0:
+                # Win: stop counting — this resets the streak
                 break
+            # pnl == 0 (breakeven): skip — does not reset or increment the streak
         return count
 
 
@@ -465,3 +487,32 @@ class MT5ConnectionRepository:
             return 100.0  # Sin eventos asumimos que estuvo conectado
 
         return round(connected / total * 100, 2)
+
+
+class RiskPauseRepository:
+    """Repositorio para risk_pauses."""
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create_pause(self, paused_at: datetime, resume_at: datetime | None,
+                     reason: str, severity: str) -> RiskPause:
+        pause = RiskPause(paused_at=paused_at, resume_at=resume_at,
+                          reason=reason, severity=severity, active=True)
+        self.session.add(pause)
+        self.session.flush()
+        return pause
+
+    def get_active(self) -> RiskPause | None:
+        stmt = select(RiskPause).where(RiskPause.active == True).order_by(RiskPause.paused_at.desc())
+        return self.session.scalar(stmt)
+
+    def deactivate_all(self) -> None:
+        stmt = select(RiskPause).where(RiskPause.active == True)
+        pauses = list(self.session.scalars(stmt).all())
+        for p in pauses:
+            p.active = False
+        self.session.flush()
+
+    def get_history(self, limit: int = 50) -> list[RiskPause]:
+        stmt = select(RiskPause).order_by(RiskPause.paused_at.desc()).limit(limit)
+        return list(self.session.scalars(stmt).all())

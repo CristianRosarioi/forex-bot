@@ -1,7 +1,7 @@
 """Modelos SQLAlchemy 2.0 para el dominio de trading.
 
 Tablas: signals, orders, trades, drawdown_snapshots, bot_events,
-        mt5_connection_log, economic_events.
+        mt5_connection_log, economic_events, risk_pauses.
 """
 
 from datetime import datetime
@@ -197,3 +197,18 @@ class EconomicEvent(Base):
             f"<EconomicEvent id={self.id} title={self.title!r} "
             f"currency={self.currency} impact={self.impact} event_time={self.event_time}>"
         )
+
+
+class RiskPause(Base):
+    """Pausa de trading activa por límite de riesgo."""
+    __tablename__ = "risk_pauses"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    paused_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    resume_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(10), nullable=False)  # WARNING/ERROR/CRITICAL
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+
+    def __repr__(self) -> str:
+        return f"<RiskPause id={self.id} reason={self.reason!r} active={self.active} resume_at={self.resume_at}>"
