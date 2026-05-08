@@ -104,3 +104,57 @@ def get_logger(name: str) -> logging.Logger:
     logger.propagate = False
 
     return logger
+
+
+import threading
+
+_db_log_lock = threading.Lock()
+
+
+def log_event(
+    event_type: str,
+    severity: str,
+    module: str,
+    message: str,
+    context: dict | None = None,
+) -> None:
+    """Loggea un evento importante: stdout/archivo Y persiste en bot_events de PostgreSQL.
+
+    Si la DB no está disponible, loggea el error pero NO propaga la excepción (fail-safe).
+    Thread-safe.
+
+    Args:
+        event_type: Tipo de evento (e.g. "MT5_DISCONNECTED"). Mismo vocabulario que EventType.
+        severity: "INFO" | "WARNING" | "ERROR" | "CRITICAL"
+        module: Nombre del módulo de origen (e.g. "bot.core.connector")
+        message: Mensaje legible por humanos.
+        context: Datos adicionales como dict, opcional.
+    """
+    _log = get_logger(module)
+    level_map = {
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL,
+    }
+    level = level_map.get(severity.upper(), logging.INFO)
+    _log.log(level, f"[{event_type}] {message}", extra={"context": context or {}})
+
+    with _db_log_lock:
+        try:
+            from bot.db.session import get_session, SessionLocal
+            if SessionLocal is None:
+                return  # DB no inicializada, skip silencioso
+            from bot.db.repository import BotEventRepository
+            with get_session() as session:
+                repo = BotEventRepository(session)
+                repo.log(
+                    event_type=event_type,
+                    severity=severity.upper(),
+                    module=module,
+                    message=message,
+                    context=context,
+                )
+        except Exception as exc:
+            _err_log = get_logger(__name__)
+            _err_log.error(f"log_event: failed to persist to DB: {exc}")
