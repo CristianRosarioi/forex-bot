@@ -17,6 +17,7 @@ from bot.db.models import (
     DrawdownSnapshot,
     BotEvent,
     MT5ConnectionLog,
+    RiskPause,
 )
 
 
@@ -465,3 +466,32 @@ class MT5ConnectionRepository:
             return 100.0  # Sin eventos asumimos que estuvo conectado
 
         return round(connected / total * 100, 2)
+
+
+class RiskPauseRepository:
+    """Repositorio para risk_pauses."""
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create_pause(self, paused_at: datetime, resume_at: datetime | None,
+                     reason: str, severity: str) -> RiskPause:
+        pause = RiskPause(paused_at=paused_at, resume_at=resume_at,
+                          reason=reason, severity=severity, active=True)
+        self.session.add(pause)
+        self.session.flush()
+        return pause
+
+    def get_active(self) -> RiskPause | None:
+        stmt = select(RiskPause).where(RiskPause.active == True).order_by(RiskPause.paused_at.desc())
+        return self.session.scalar(stmt)
+
+    def deactivate_all(self) -> None:
+        stmt = select(RiskPause).where(RiskPause.active == True)
+        pauses = list(self.session.scalars(stmt).all())
+        for p in pauses:
+            p.active = False
+        self.session.flush()
+
+    def get_history(self, limit: int = 50) -> list[RiskPause]:
+        stmt = select(RiskPause).order_by(RiskPause.paused_at.desc()).limit(limit)
+        return list(self.session.scalars(stmt).all())

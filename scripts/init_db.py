@@ -37,14 +37,14 @@ def main() -> int:
         inspector = inspect(_db_session.engine)
         tables = inspector.get_table_names()
         expected = ["signals", "orders", "trades", "drawdown_snapshots",
-                    "bot_events", "mt5_connection_log", "economic_events"]
+                    "bot_events", "mt5_connection_log", "economic_events", "risk_pauses"]
         for table in expected:
             if table in tables:
                 print(f"{_OK} Table ready: {table}")
             else:
                 print(f"{_FAIL} Table missing: {table}")
                 return 1
-        print(f"{_OK} All {len(expected)} tables ready")
+        print(f"{_OK} All 8 tables ready")
     except Exception as exc:
         print(f"{_FAIL} Schema creation failed: {exc}")
         return 1
@@ -58,7 +58,7 @@ def main() -> int:
                 severity="INFO",
                 module="scripts.init_db",
                 message="Database schema initialized",
-                context={"tables": expected, "db": settings.db.name},
+                context={"tables": list(expected), "db": settings.db.name},
             )
         print(f"{_OK} Initial BotEvent logged")
     except Exception as exc:
