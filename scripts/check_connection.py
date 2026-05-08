@@ -136,6 +136,65 @@ def check_postgres(settings) -> None:
         _fail(f"PostgreSQL connection failed: {exc}")
 
 
+def check_schema(settings) -> None:
+    """Verifica que el schema de la DB tenga todas las tablas esperadas y reporta filas."""
+    _section("5. Database Schema")
+    try:
+        from sqlalchemy import create_engine, inspect
+        from sqlalchemy.orm import sessionmaker
+
+        engine = create_engine(settings.db.url, connect_args={"connect_timeout": 5})
+        inspector = inspect(engine)
+        existing_tables = inspector.get_table_names()
+
+        expected_tables = [
+            "signals",
+            "orders",
+            "trades",
+            "drawdown_snapshots",
+            "bot_events",
+            "mt5_connection_log",
+            "economic_events",
+        ]
+
+        Session = sessionmaker(bind=engine)
+        session = Session()
+
+        try:
+            for table in expected_tables:
+                if table not in existing_tables:
+                    _fail(f"Table missing: {table}")
+                    continue
+                result = session.execute(text(f"SELECT COUNT(*) FROM {table}"))
+                row_count = result.scalar()
+                _ok(f"Table '{table}': {row_count} rows")
+
+            # Mostrar el último BotEvent registrado
+            if "bot_events" in existing_tables:
+                last_event = session.execute(
+                    text(
+                        "SELECT event_type, severity, occurred_at, message "
+                        "FROM bot_events ORDER BY occurred_at DESC LIMIT 1"
+                    )
+                ).fetchone()
+                if last_event:
+                    print(
+                        f"\n  Last BotEvent:\n"
+                        f"    event_type : {last_event[0]}\n"
+                        f"    severity   : {last_event[1]}\n"
+                        f"    occurred_at: {last_event[2]}\n"
+                        f"    message    : {last_event[3]}"
+                    )
+                else:
+                    _warn("No BotEvents registered yet")
+        finally:
+            session.close()
+            engine.dispose()
+
+    except Exception as exc:
+        _fail(f"Schema check failed: {exc}")
+
+
 def main() -> int:
     from config.settings import settings
 
@@ -156,6 +215,8 @@ def main() -> int:
         _warn("Skipping symbol checks (MT5 not connected)")
 
     check_postgres(settings)
+
+    check_schema(settings)
 
     print(f"\n{'=' * 50}")
     if _all_ok:
