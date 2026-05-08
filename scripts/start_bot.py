@@ -51,15 +51,10 @@ def build_engine() -> TradingEngine:
     connector = MT5Connector(settings.mt5, bus)
     buffer = TimeframeBuffer()
 
-    symbols_list = list(settings.symbols.keys()) if hasattr(settings, "symbols") else []
-    timeframes = ["M1", "M5", "M15", "H1", "H4", "D1"]
-
     feed = MarketDataFeed(
         connector=connector,
-        buffer=buffer,
         event_bus=bus,
-        symbols=symbols_list,
-        timeframes=timeframes,
+        buffer=buffer,
     )
 
     market_calendar = MarketCalendar(connector=connector)
@@ -97,7 +92,8 @@ def build_engine() -> TradingEngine:
     EventPersistenceHandler(bus)
     telegram = None
     if settings.telegram.bot_token and settings.telegram.chat_id:
-        telegram = TelegramNotifier(settings.telegram, bus)
+        telegram = TelegramNotifier(bus, settings.telegram)
+        telegram.start()  # subscribe to events and send "Telegram notifier conectado"
 
     registry = load_default_strategies()
     level_manager = LevelManager()

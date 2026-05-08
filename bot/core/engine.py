@@ -80,6 +80,13 @@ class TradingEngine:
         self._feed_thread.start()
 
         logger.info("Engine running in %s mode. Waiting for bars...", self._settings.mode.value)
+
+        # Notify subscribers (e.g. Telegram) that the bot has started
+        self._bus.publish("bot_started", {
+            "mode": self._settings.mode.value,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        })
+
         self._stop_event.wait()  # block until stop()
 
     def stop(self) -> None:
