@@ -195,6 +195,27 @@ def check_schema(settings) -> None:
         _fail(f"Schema check failed: {exc}")
 
 
+def check_telegram(settings) -> None:
+    """Envía un mensaje de test al chat de Telegram configurado."""
+    _section("6. Telegram")
+    try:
+        import asyncio
+        import telegram
+        bot = telegram.Bot(token=settings.telegram.bot_token)
+
+        async def _send():
+            await bot.send_message(
+                chat_id=settings.telegram.chat_id,
+                text="🤖 check\\_connection\\.py \\- test",  # MarkdownV2 escapado
+                parse_mode="MarkdownV2",
+            )
+
+        asyncio.run(_send())
+        _ok("Telegram OK - mensaje de test enviado")
+    except Exception as exc:
+        _warn(f"Telegram no disponible: {exc}")
+
+
 def main() -> int:
     from config.settings import settings
 
@@ -217,6 +238,8 @@ def main() -> int:
     check_postgres(settings)
 
     check_schema(settings)
+
+    check_telegram(settings)
 
     print(f"\n{'=' * 50}")
     if _all_ok:
