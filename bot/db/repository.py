@@ -265,8 +265,14 @@ class TradeRepository:
     def get_consecutive_losses(self) -> int:
         """Cuenta las pérdidas consecutivas desde el último trade cerrado hacia atrás.
 
+        M-05: Lógica de clasificación:
+        - pnl_currency > 0 → win (resetea el contador)
+        - pnl_currency < 0 → loss (incrementa el contador)
+        - pnl_currency == 0 (breakeven) → IGNORADO (ni win ni loss, continúa contando)
+          Un trade breakeven no interrumpe una racha de pérdidas.
+
         Itera desde el trade más reciente hacia el más antiguo hasta encontrar
-        un trade ganador (pnl_currency >= 0) o llegar al inicio.
+        un trade ganador (pnl_currency > 0) o llegar al inicio.
 
         Returns:
             Número de pérdidas consecutivas al final de la serie.
@@ -283,8 +289,10 @@ class TradeRepository:
             pnl = float(trade.pnl_currency) if trade.pnl_currency is not None else 0.0
             if pnl < 0:
                 count += 1
-            else:
+            elif pnl > 0:
+                # Win: stop counting — this resets the streak
                 break
+            # pnl == 0 (breakeven): skip — does not reset or increment the streak
         return count
 
 

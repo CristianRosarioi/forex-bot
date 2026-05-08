@@ -106,8 +106,13 @@ class PositionSizer:
             # Base currency es USD → pip_value inversamente proporcional al precio
             pip_value_per_lot = pip_size * contract_size / entry
         else:
-            # Cross: aproximar usando pip_size * contract_size (conservador)
-            pip_value_per_lot = pip_size * contract_size
+            # M-02: Cross pair without MT5 tick data — cannot size accurately
+            logger.warning(
+                "Cross pair %s has no MT5 tick_value — cannot calculate pip value accurately. "
+                "Returning 0 lots to prevent over-sizing.",
+                sym
+            )
+            pip_value_per_lot = Decimal("0")
 
         logger.debug("pip_value_per_lot=%s", pip_value_per_lot)
 
@@ -143,7 +148,12 @@ class PositionSizer:
         return lots_final
 
     def _correlation_factor(self, symbol: str, direction: str) -> Decimal:
-        """Devuelve 0.5 si hay posiciones correlacionadas en la misma dirección, 1.0 si no."""
+        """M-01: Escala el factor de correlación con el número de posiciones correlacionadas.
+
+        - 0 correlated → return 1.0 (full size)
+        - 1 correlated → return 0.5 (half size)
+        - 2+ correlated → return 0.25 (quarter size)
+        """
         try:
             open_trades = self._trade_repo.get_open()
         except Exception:
@@ -154,12 +164,16 @@ class PositionSizer:
         if group is None or not open_trades:
             return Decimal("1")
 
-        for trade in open_trades:
-            trade_sym = str(trade.symbol).upper()
-            if trade_sym in group and trade_sym != symbol:
-                trade_dir = str(trade.direction).upper()
-                if trade_dir == direction.upper():
-                    logger.info("Correlation detected: %s has open %s %s → sizing 50%%",
-                                symbol, trade_dir, trade_sym)
-                    return Decimal("0.5")
-        return Decimal("1")
+        count = sum(
+            1 for t in open_trades
+            if str(t.symbol).upper() in group
+            and str(t.symbol).upper() != symbol
+            and str(t.direction).upper() == direction.upper()
+        )
+        if count == 0:
+            return Decimal("1")
+        if count == 1:
+            logger.info("Correlation detected: 1 correlated trade → sizing 50%% for %s %s", symbol, direction)
+            return Decimal("0.5")
+        logger.info("Correlation detected: %d correlated trades → sizing 25%% for %s %s", count, symbol, direction)
+        return Decimal("0.25")

@@ -60,12 +60,20 @@ class MarketCalendar:
             return value
 
     def is_weekend(self, at_time: datetime | None = None) -> bool:
-        """Retorna True si es sábado completo o domingo antes de las 22:00 UTC."""
+        """Retorna True si el mercado Forex está cerrado por fin de semana.
+
+        M-04: Incluye el cierre del viernes a las 21:00 UTC (Pepperstone/Forex).
+        - Sábado completo → True
+        - Domingo antes de las 22:00 UTC → True (mercado abre a las 22:00)
+        - Viernes a partir de las 21:00 UTC → True (mercado cierra a las 21:00)
+        """
         t = (at_time or datetime.now(timezone.utc))
-        weekday = t.weekday()  # 5=Saturday, 6=Sunday
+        weekday = t.weekday()  # 4=Friday, 5=Saturday, 6=Sunday
         if weekday == 5:
             return True
         if weekday == 6 and t.hour < 22:
+            return True
+        if weekday == 4 and t.hour >= 21:  # Friday after 21:00 UTC = market closing
             return True
         return False
 
