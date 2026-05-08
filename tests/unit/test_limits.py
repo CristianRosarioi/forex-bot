@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from bot.core.event_bus import EventBus, EventType
-from bot.risk.limits import RiskLimits, LimitCheckResult
+from bot.risk.limits import RiskLimits, LimitCheckResult, _next_monday_utc
 from config.settings import RiskSettings
 
 
@@ -198,12 +198,21 @@ class TestCheckMonthlyDrawdown:
 class TestCheckKillSwitch:
     def test_check_kill_switch_pass(self):
         limits = make_limits()
-        result = limits.check_kill_switch(current_balance=8500.0, initial_balance=10000.0)
+        # M-03: parameter is now current_equity
+        with patch("bot.risk.limits.get_session") as mock_gs:
+            mock_gs.return_value.__enter__.return_value = MagicMock()
+            mock_gs.return_value.__exit__.return_value = False
+            with patch("bot.risk.limits.RiskPauseRepository"):
+                result = limits.check_kill_switch(current_equity=8500.0, initial_balance=10000.0)
         assert result.passed is True  # 85% > 80% threshold
 
     def test_check_kill_switch_fail(self):
         limits = make_limits()
-        result = limits.check_kill_switch(current_balance=7500.0, initial_balance=10000.0)
+        with patch("bot.risk.limits.get_session") as mock_gs:
+            mock_gs.return_value.__enter__.return_value = MagicMock()
+            mock_gs.return_value.__exit__.return_value = False
+            with patch("bot.risk.limits.RiskPauseRepository"):
+                result = limits.check_kill_switch(current_equity=7500.0, initial_balance=10000.0)
         assert result.passed is False  # 75% < 80% threshold
         assert result.severity == "CRITICAL"
         assert result.check_name == "kill_switch"
@@ -219,13 +228,17 @@ class TestCheckKillSwitch:
         trade_repo.get_consecutive_losses.return_value = 0
         limits = RiskLimits(settings=settings, trade_repo=trade_repo,
                             drawdown_repo=MagicMock(), event_bus=bus)
-        limits.check_kill_switch(current_balance=7000.0, initial_balance=10000.0)
+        with patch("bot.risk.limits.get_session") as mock_gs:
+            mock_gs.return_value.__enter__.return_value = MagicMock()
+            mock_gs.return_value.__exit__.return_value = False
+            with patch("bot.risk.limits.RiskPauseRepository"):
+                limits.check_kill_switch(current_equity=7000.0, initial_balance=10000.0)
         assert len(received) == 1
         assert received[0]["balance"] == 7000.0
 
     def test_check_kill_switch_zero_initial_passes(self):
         limits = make_limits()
-        result = limits.check_kill_switch(current_balance=0.0, initial_balance=0.0)
+        result = limits.check_kill_switch(current_equity=0.0, initial_balance=0.0)
         assert result.passed is True
 
 
@@ -252,16 +265,20 @@ class TestCheckAll:
 
     def test_check_all_passes_when_no_limits_hit(self):
         limits = make_limits()
-        failed = limits.check_all(
-            symbol="EURUSD",
-            direction="BUY",
-            current_equity=10000.0,
-            current_balance=10000.0,
-            initial_balance=10000.0,
-            day_start_balance=10000.0,
-            week_start_balance=10000.0,
-            month_start_balance=10000.0,
-        )
+        with patch("bot.risk.limits.get_session") as mock_gs:
+            mock_gs.return_value.__enter__.return_value = MagicMock()
+            mock_gs.return_value.__exit__.return_value = False
+            with patch("bot.risk.limits.RiskPauseRepository"):
+                failed = limits.check_all(
+                    symbol="EURUSD",
+                    direction="BUY",
+                    current_equity=10000.0,
+                    current_balance=10000.0,
+                    initial_balance=10000.0,
+                    day_start_balance=10000.0,
+                    week_start_balance=10000.0,
+                    month_start_balance=10000.0,
+                )
         assert failed == []
 
     def test_check_all_multiple_failures(self):
@@ -286,14 +303,14 @@ class TestCheckAll:
 class TestIsPausedWithDb:
     """Integration test using real DB."""
 
-    def test_is_paused_no_engine_returns_false(self):
-        """When DB engine is not initialized, is_paused() should return False safely."""
+    def test_is_paused_no_engine_returns_true(self):
+        """C-02: When DB engine is not initialized, is_paused() must return True (fail-closed)."""
         limits = make_limits()
         # Patch get_session to raise RuntimeError (engine not initialized)
         with patch("bot.risk.limits.get_session") as mock_gs:
             mock_gs.side_effect = RuntimeError("Engine not initialized")
             result = limits.is_paused()
-        assert result is False
+        assert result is True  # fail-closed
 
     def test_is_paused_with_real_db(self):
         """Real DB integration test — requires initialized engine."""
@@ -320,3 +337,107 @@ class TestIsPausedWithDb:
         # Resume
         limits.resume()
         assert limits.is_paused() is False
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# NEW TESTS: Coverage for risk auditor fixes
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestKillSwitchPersistsPause:
+    def test_kill_switch_creates_critical_pause(self):
+        """C-01: kill switch must create a CRITICAL pause in DB."""
+        limits = make_limits()
+        with patch("bot.risk.limits.get_session") as mock_gs:
+            mock_session = MagicMock()
+            mock_gs.return_value.__enter__.return_value = mock_session
+            mock_gs.return_value.__exit__.return_value = False
+            mock_repo = MagicMock()
+            with patch("bot.risk.limits.RiskPauseRepository") as MockRepo:
+                MockRepo.return_value = mock_repo
+                limits.check_kill_switch(current_equity=7000.0, initial_balance=10000.0)
+                mock_repo.create_pause.assert_called_once()
+                call_kwargs = mock_repo.create_pause.call_args[1]
+                assert call_kwargs["severity"] == "CRITICAL"
+                assert call_kwargs["resume_at"] is None  # permanent pause
+
+
+class TestIsPausedFailClosed:
+    def test_is_paused_returns_true_on_db_error(self):
+        """C-02: DB failure must return True (fail-closed), not False."""
+        limits = make_limits()
+        with patch("bot.risk.limits.get_session") as mock_gs:
+            mock_gs.side_effect = Exception("DB connection lost")
+            result = limits.is_paused()
+        assert result is True  # fail-closed
+
+    def test_is_paused_permanent_pause_resume_at_none(self):
+        """C-01b: resume_at=None means permanent pause."""
+        limits = make_limits()
+        with patch("bot.risk.limits.get_session") as mock_gs:
+            mock_session = MagicMock()
+            mock_gs.return_value.__enter__.return_value = mock_session
+            mock_gs.return_value.__exit__.return_value = False
+            mock_repo = MagicMock()
+            pause = MagicMock()
+            pause.resume_at = None  # permanent
+            mock_repo.get_active.return_value = pause
+            with patch("bot.risk.limits.RiskPauseRepository") as MockRepo:
+                MockRepo.return_value = mock_repo
+                result = limits.is_paused()
+        assert result is True  # permanent pause is active
+
+
+class TestNextMondayUtc:
+    def test_next_monday_from_monday_is_7_days(self):
+        """H-02: from Monday, next Monday is 7 days away, not 0."""
+        from bot.risk.limits import _next_monday_utc
+        # Monday 2024-01-08 10:00 UTC
+        monday = datetime(2024, 1, 8, 10, 0, tzinfo=timezone.utc)
+
+        # Patch datetime.now inside limits module
+        with patch("bot.risk.limits.datetime") as mock_dt:
+            mock_dt.now.return_value = monday
+            # Allow datetime constructor to work normally
+            mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+            result = _next_monday_utc()
+
+        # Should be 2024-01-15 (7 days later), not 2024-01-08 (same day)
+        assert result.weekday() == 0  # Monday
+        assert result > monday
+        assert (result - monday).days >= 6
+
+    def test_next_monday_from_wednesday(self):
+        """H-02: from Wednesday, next Monday is 5 days ahead."""
+        from bot.risk.limits import _next_monday_utc
+        wednesday = datetime(2024, 1, 10, 10, 0, tzinfo=timezone.utc)  # Wednesday
+
+        with patch("bot.risk.limits.datetime") as mock_dt:
+            mock_dt.now.return_value = wednesday
+            mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+            result = _next_monday_utc()
+
+        assert result.weekday() == 0  # Monday
+        assert result > wednesday
+
+
+class TestKillSwitchUsesEquity:
+    def test_kill_switch_uses_equity_not_balance(self):
+        """M-03: kill switch must fire when equity drops, even if balance unchanged."""
+        limits = make_limits()
+        with patch("bot.risk.limits.get_session") as mock_gs:
+            mock_session = MagicMock()
+            mock_gs.return_value.__enter__.return_value = mock_session
+            mock_gs.return_value.__exit__.return_value = False
+            with patch("bot.risk.limits.RiskPauseRepository"):
+                # Equity drops below threshold, balance unchanged
+                result = limits.check_kill_switch(current_equity=7500.0, initial_balance=10000.0)
+        assert result.passed is False  # 75% < 80% threshold
+
+    def test_kill_switch_passes_when_equity_above_threshold(self):
+        limits = make_limits()
+        with patch("bot.risk.limits.get_session") as mock_gs:
+            mock_gs.return_value.__enter__.return_value = MagicMock()
+            mock_gs.return_value.__exit__.return_value = False
+            with patch("bot.risk.limits.RiskPauseRepository"):
+                result = limits.check_kill_switch(current_equity=8500.0, initial_balance=10000.0)
+        assert result.passed is True

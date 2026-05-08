@@ -285,3 +285,98 @@ class TestCorrelatedGroups:
     def test_get_correlated_group_unknown(self):
         group = _get_correlated_group("XAUUSD")
         assert group is None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# NEW TESTS: Coverage for risk auditor fixes
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestCorrelationScaling:
+    def test_correlation_factor_two_trades_returns_quarter(self):
+        """M-01: 2 correlated trades → 0.25 factor."""
+        settings = make_settings()
+        trade_repo = MagicMock()
+        trade1 = MagicMock()
+        trade1.symbol = "GBPUSD"
+        trade1.direction = "BUY"
+        trade2 = MagicMock()
+        trade2.symbol = "AUDUSD"
+        trade2.direction = "BUY"
+        trade_repo.get_open.return_value = [trade1, trade2]
+        sizer = PositionSizer(settings=settings, trade_repo=trade_repo)
+        info = make_symbol_info()
+        info["direction"] = "BUY"
+        lots = sizer.calculate_lots(
+            symbol="EURUSD",
+            entry_price=1.1000,
+            sl_price=1.0980,
+            account_balance=10000.0,
+            symbol_info=info,
+        )
+        # base=0.25, factor=0.25 → 0.0625 → rounded down to 0.06
+        assert lots == Decimal("0.06")
+
+    def test_correlation_factor_one_trade_returns_half(self):
+        """M-01: 1 correlated trade → 0.5 factor."""
+        settings = make_settings()
+        trade_repo = MagicMock()
+        trade1 = MagicMock()
+        trade1.symbol = "GBPUSD"
+        trade1.direction = "BUY"
+        trade_repo.get_open.return_value = [trade1]
+        sizer = PositionSizer(settings=settings, trade_repo=trade_repo)
+        info = make_symbol_info()
+        info["direction"] = "BUY"
+        lots = sizer.calculate_lots(
+            symbol="EURUSD",
+            entry_price=1.1000,
+            sl_price=1.0980,
+            account_balance=10000.0,
+            symbol_info=info,
+        )
+        # base=0.25, factor=0.5 → 0.125 → rounded down to 0.12
+        assert lots == Decimal("0.12")
+
+
+class TestCrossPairNoMT5:
+    def test_cross_pair_without_tick_value_returns_zero(self):
+        """M-02: cross pairs without MT5 tick_value return 0 lots."""
+        sizer = make_sizer()
+        info = dict(
+            contract_size=100000,
+            point=0.00001,
+            tick_value=None,  # no MT5 data
+            tick_size=None,
+            volume_min=0.01,
+            volume_max=100.0,
+            volume_step=0.01,
+        )
+        lots = sizer.calculate_lots(
+            symbol="EURGBP",  # cross pair: not starts/ends with USD
+            entry_price=0.8600,
+            sl_price=0.8580,
+            account_balance=10000.0,
+            symbol_info=info,
+        )
+        assert lots == Decimal("0")
+
+    def test_eurusd_without_tick_value_still_calculates(self):
+        """M-02: EURUSD ends with USD so it uses direct pip_value formula."""
+        sizer = make_sizer()
+        info = dict(
+            contract_size=100000,
+            point=0.00001,
+            tick_value=None,
+            tick_size=None,
+            volume_min=0.01,
+            volume_max=100.0,
+            volume_step=0.01,
+        )
+        lots = sizer.calculate_lots(
+            symbol="EURUSD",
+            entry_price=1.1000,
+            sl_price=1.0980,
+            account_balance=10000.0,
+            symbol_info=info,
+        )
+        assert lots == Decimal("0.25")

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from bot.core.event_bus import EventBus
+from bot.core.event_bus import EventBus, EventType
 from bot.risk.limits import LimitCheckResult
 from bot.risk.validator import OrderRequest, OrderValidator, ValidationResult
 from config.settings import RiskSettings
@@ -61,6 +61,7 @@ def make_validator(
     lots=Decimal("0.25"),
     is_paused=False,
     active_pause=None,
+    bot_mode=None,  # None = SHADOW equivalent (no enforcement)
     **kwargs
 ) -> OrderValidator:
     settings = make_settings()
@@ -89,6 +90,7 @@ def make_validator(
         position_sizer=position_sizer,
         risk_limits=risk_limits,
         event_bus=event_bus,
+        bot_mode=bot_mode,
         **kwargs
     )
 
@@ -225,11 +227,10 @@ class TestFullApprovalPath:
         assert result.calculated_lots == Decimal("0.25")
         assert result.rejection_reason is None
 
-    def test_full_approval_publishes_signal_event(self):
-        """On approval, SIGNAL_GENERATED event must be published."""
+    def test_full_approval_does_not_publish_signal_event(self):
+        """L-05: On approval, SIGNAL_GENERATED must NOT be published by validator."""
         bus = EventBus()
         received = []
-        from bot.core.event_bus import EventType
         bus.subscribe(EventType.SIGNAL_GENERATED, lambda p: received.append(p))
 
         settings = make_settings()
@@ -256,9 +257,8 @@ class TestFullApprovalPath:
         request = make_request(direction="BUY", entry_price=1.1000, sl_price=1.0980)
         validator.validate(request, make_account_state())
 
-        assert len(received) == 1
-        assert received[0]["symbol"] == "EURUSD"
-        assert received[0]["direction"] == "BUY"
+        # L-05: validator must NOT publish SIGNAL_GENERATED (that's the strategy's job)
+        assert len(received) == 0
 
     def test_sell_order_full_approval(self):
         """SELL order with valid SL above entry should be approved."""
@@ -302,3 +302,149 @@ class TestSessionCalendarIntegration:
         result = validator.validate(request, make_account_state())
         assert result.approved is False
         assert "economic event" in result.rejection_reason.lower()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# NEW TESTS: Coverage for risk auditor fixes
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestAccountStateMissingFields:
+    def test_missing_balance_raises_value_error(self):
+        """L-06: missing required account fields must raise ValueError."""
+        validator = make_validator()
+        request = make_request()
+        incomplete = {"balance": 10000.0}  # missing equity, initial_balance, etc.
+        with pytest.raises(ValueError, match="missing required fields"):
+            validator.validate(request, incomplete)
+
+    def test_all_fields_present_does_not_raise(self):
+        """L-06: when all required fields are present, no ValueError raised."""
+        validator = make_validator()
+        request = make_request()
+        result = validator.validate(request, make_account_state())
+        # Should not raise, should succeed
+        assert result.approved is True
+
+    def test_missing_multiple_fields_raises_value_error(self):
+        """L-06: missing multiple fields reports them all."""
+        validator = make_validator()
+        request = make_request()
+        incomplete = {}  # all fields missing
+        with pytest.raises(ValueError, match="missing required fields"):
+            validator.validate(request, incomplete)
+
+
+class TestValidatorBotMode:
+    def test_demo_mode_requires_market_calendar(self):
+        """C-04: DEMO mode requires market_calendar."""
+        with pytest.raises(ValueError, match="market_calendar"):
+            make_validator(bot_mode="DEMO")  # no market_calendar
+
+    def test_live_mode_requires_economic_calendar(self):
+        """C-04: LIVE mode requires economic_calendar."""
+        with pytest.raises(ValueError, match="economic_calendar"):
+            market_cal = MagicMock()
+            make_validator(bot_mode="LIVE", market_calendar=market_cal)  # no eco_calendar
+
+    def test_shadow_mode_does_not_require_calendars(self):
+        """C-04: SHADOW mode works without calendars."""
+        validator = make_validator(bot_mode="SHADOW")  # should not raise
+        assert validator is not None
+
+    def test_none_mode_does_not_require_calendars(self):
+        """C-04: bot_mode=None (default) does not require calendars."""
+        validator = make_validator(bot_mode=None)  # should not raise
+        assert validator is not None
+
+    def test_demo_mode_with_both_calendars_succeeds(self):
+        """C-04: DEMO mode with both calendars should not raise."""
+        market_cal = MagicMock()
+        eco_cal = MagicMock()
+        eco_cal.is_blocked_for_symbol.return_value = False
+        market_cal.is_weekend.return_value = False
+        market_cal.symbol_allowed_in_current_session.return_value = True
+        validator = make_validator(
+            bot_mode="DEMO",
+            market_calendar=market_cal,
+            economic_calendar=eco_cal,
+        )
+        assert validator is not None
+
+
+class TestKillSwitchDbError:
+    def test_db_error_fetching_pause_blocks_order(self):
+        """H-01/C-03: DB error when fetching pause state must block orders (fail-closed)."""
+        settings = make_settings()
+        trade_repo = MagicMock()
+        drawdown_repo = MagicMock()
+        signal_repo = MagicMock()
+        position_sizer = MagicMock()
+        position_sizer.calculate_lots.return_value = Decimal("0.25")
+        risk_limits = MagicMock()
+        risk_limits.check_all.return_value = []
+        risk_limits.is_paused.return_value = False
+        risk_limits.get_active_pause.side_effect = Exception("DB down")
+        bus = EventBus()
+        validator = OrderValidator(
+            settings=settings,
+            trade_repo=trade_repo,
+            drawdown_repo=drawdown_repo,
+            signal_repo=signal_repo,
+            position_sizer=position_sizer,
+            risk_limits=risk_limits,
+            event_bus=bus,
+        )
+        request = make_request()
+        result = validator.validate(request, make_account_state())
+        assert result.approved is False
+        assert result.rejection_severity == "CRITICAL"
+
+
+class TestNoSignalEventOnApproval:
+    def test_approval_does_not_publish_signal_generated(self):
+        """L-05: validator must NOT publish SIGNAL_GENERATED on approval."""
+        bus = EventBus()
+        received = []
+        bus.subscribe(EventType.SIGNAL_GENERATED, lambda p: received.append(p))
+        settings = make_settings()
+        trade_repo = MagicMock()
+        drawdown_repo = MagicMock()
+        signal_repo = MagicMock()
+        position_sizer = MagicMock()
+        position_sizer.calculate_lots.return_value = Decimal("0.25")
+        risk_limits = MagicMock()
+        risk_limits.check_all.return_value = []
+        risk_limits.is_paused.return_value = False
+        risk_limits.get_active_pause.return_value = None
+        validator = OrderValidator(
+            settings=settings,
+            trade_repo=trade_repo,
+            drawdown_repo=drawdown_repo,
+            signal_repo=signal_repo,
+            position_sizer=position_sizer,
+            risk_limits=risk_limits,
+            event_bus=bus,
+        )
+        request = make_request()
+        validator.validate(request, make_account_state())
+        assert len(received) == 0  # no SIGNAL_GENERATED
+
+
+class TestSpreadCalculation:
+    def test_spread_blocks_wide_spread(self):
+        """H-04: spread check must block when spread > spread_max."""
+        validator = make_validator(symbol_config={"EURUSD": {"spread_max": 2.0}})
+        request = make_request(symbol="EURUSD")
+        # Mock _get_current_spread to return a wide spread
+        with patch.object(validator, "_get_current_spread", return_value=3.5):
+            result = validator.validate(request, make_account_state())
+        assert result.approved is False
+        assert "spread" in result.rejection_reason.lower()
+
+    def test_spread_allows_normal_spread(self):
+        """H-04: normal spread within limit should not block."""
+        validator = make_validator(symbol_config={"EURUSD": {"spread_max": 2.0}})
+        request = make_request(symbol="EURUSD")
+        with patch.object(validator, "_get_current_spread", return_value=1.2):
+            result = validator.validate(request, make_account_state())
+        assert result.approved is True

@@ -53,8 +53,8 @@ class TestIsWeekend:
         cal = make_calendar()
         assert cal.is_weekend(mon) is False
 
-    def test_is_not_weekend_friday(self):
-        # 2024-01-05 was a Friday
+    def test_is_not_weekend_friday_before_21(self):
+        # 2024-01-05 was a Friday — before 21:00 UTC is still market open
         fri = dt_utc(2024, 1, 5, 18, 0)
         cal = make_calendar()
         assert cal.is_weekend(fri) is False
@@ -169,3 +169,34 @@ class TestNextMarketTimes:
         assert next_close > datetime.now(timezone.utc)
         assert next_close.weekday() == 4  # Friday
         assert next_close.hour == 21
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# NEW TESTS: Coverage for risk auditor fixes
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestWeekendFridayClose:
+    def test_is_weekend_friday_after_21_utc(self):
+        """M-04: Friday after 21:00 UTC is treated as weekend."""
+        # 2024-01-05 was a Friday
+        fri_after_21 = dt_utc(2024, 1, 5, 21, 0)
+        cal = make_calendar()
+        assert cal.is_weekend(fri_after_21) is True
+
+    def test_is_weekend_friday_at_22_utc(self):
+        """Friday at 22:00 UTC is also weekend."""
+        fri_22 = dt_utc(2024, 1, 5, 22, 0)
+        cal = make_calendar()
+        assert cal.is_weekend(fri_22) is True
+
+    def test_is_not_weekend_friday_before_21_utc(self):
+        """Friday at 20:59 UTC is NOT weekend."""
+        fri_before_21 = dt_utc(2024, 1, 5, 20, 59)
+        cal = make_calendar()
+        assert cal.is_weekend(fri_before_21) is False
+
+    def test_is_not_weekend_friday_at_20(self):
+        """Friday at 20:00 UTC is still market hours."""
+        fri_20 = dt_utc(2024, 1, 5, 20, 0)
+        cal = make_calendar()
+        assert cal.is_weekend(fri_20) is False
