@@ -23,6 +23,9 @@ build/
 *.swp
 *.swo
 
+# Claude Code local settings
+.claude/settings.local.json
+
 # OS
 Thumbs.db
 desktop.ini
