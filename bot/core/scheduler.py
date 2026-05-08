@@ -136,11 +136,14 @@ class MarketCalendar:
         return current_session in allowed_sessions
 
     def next_market_open(self, symbol: str) -> datetime:
-        """Retorna el próximo lunes a las 00:00 UTC (apertura Forex estándar)."""
+        """Retorna el próximo lunes a las 00:00 UTC (apertura Forex estándar).
+
+        NEW-03: usa el mismo patrón que _next_monday_utc() en limits.py para
+        garantizar consistencia: cuando se llama en lunes, retorna el lunes
+        siguiente (7 días), no el mismo día (0 días).
+        """
         now = datetime.now(timezone.utc)
-        days_ahead = (7 - now.weekday()) % 7
-        if days_ahead == 0:
-            days_ahead = 7
+        days_ahead = (7 - now.weekday()) % 7 or 7
         return (now + timedelta(days=days_ahead)).replace(hour=0, minute=0, second=0, microsecond=0)
 
     def next_market_close(self, symbol: str) -> datetime:

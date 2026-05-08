@@ -400,6 +400,56 @@ class TestKillSwitchDbError:
         assert result.rejection_severity == "CRITICAL"
 
 
+class TestPauseActiveUsesPreloadedObject:
+    def test_pause_active_does_not_call_is_paused(self):
+        """H-01/NEW-02: _check_pause_active must use active_pause directly, no extra DB call."""
+        settings = make_settings()
+        trade_repo = MagicMock()
+        drawdown_repo = MagicMock()
+        signal_repo = MagicMock()
+        position_sizer = MagicMock()
+        position_sizer.calculate_lots.return_value = Decimal("0.25")
+        risk_limits = MagicMock()
+        risk_limits.check_all.return_value = []
+        # is_paused should NEVER be called — _check_pause_active uses active_pause directly
+        risk_limits.is_paused.side_effect = AssertionError("is_paused() must not be called")
+        # Return an active pause via get_active_pause
+        pause = MagicMock()
+        pause.severity = "ERROR"
+        pause.reason = "Daily drawdown limit hit"
+        pause.resume_at = None  # permanent pause
+        risk_limits.get_active_pause.return_value = pause
+        bus = EventBus()
+        validator = OrderValidator(
+            settings=settings,
+            trade_repo=trade_repo,
+            drawdown_repo=drawdown_repo,
+            signal_repo=signal_repo,
+            position_sizer=position_sizer,
+            risk_limits=risk_limits,
+            event_bus=bus,
+        )
+        request = make_request()
+        result = validator.validate(request, make_account_state())
+        # Must be rejected due to the active pause
+        assert result.approved is False
+        assert result.check_name if hasattr(result, "check_name") else True
+        # is_paused() must never have been called
+        risk_limits.is_paused.assert_not_called()
+
+    def test_expired_pause_does_not_block(self):
+        """H-01: an expired pause (resume_at in the past) should not block new orders."""
+        from datetime import timedelta
+        pause = MagicMock()
+        pause.severity = "ERROR"
+        pause.reason = "Old pause"
+        pause.resume_at = datetime.now(timezone.utc) - timedelta(hours=1)  # expired
+        validator = make_validator(active_pause=pause)
+        request = make_request()
+        result = validator.validate(request, make_account_state())
+        assert result.approved is True  # expired pause must not block
+
+
 class TestNoSignalEventOnApproval:
     def test_approval_does_not_publish_signal_generated(self):
         """L-05: validator must NOT publish SIGNAL_GENERATED on approval."""

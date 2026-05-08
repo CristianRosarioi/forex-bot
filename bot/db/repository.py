@@ -232,20 +232,23 @@ class TradeRepository:
         return self.session.scalar(stmt)
 
     def get_today(self) -> list[Trade]:
-        """Retorna los trades completados hoy (opened_at >= inicio del día UTC).
+        """Retorna los trades CERRADOS hoy (closed_at en el día UTC actual).
 
-        H-03: Solo cuenta trades cerrados (closed_at IS NOT NULL) para evitar
-        contar trades todavía abiertos contra el límite diario de trades.
-        Los trades abiertos que aún no cerraron no deberían contar como
-        "trades del día" para el límite de max_daily_trades.
+        NEW-04: el filtro usa closed_at (no opened_at) para contar únicamente
+        operaciones que se completaron hoy. Esto evita:
+          - Contar un trade abierto ayer y cerrado hoy como "de ayer"
+          - Contar un trade abierto hoy pero aún abierto (open position)
+
+        Semántica: "¿cuántas operaciones completamos hoy?" — que es exactamente
+        lo que check_daily_trades_limit() necesita para max_daily_trades.
 
         Nota: el modelo Trade no tiene campo status; se usa closed_at IS NOT NULL
-        como indicador de trade completado.
+        y closed_at >= inicio del día UTC como indicador de trade completado hoy.
         """
         stmt = select(Trade).where(
-            Trade.opened_at >= _today_start(),
+            Trade.closed_at >= _today_start(),
             Trade.closed_at.isnot(None),
-        ).order_by(Trade.opened_at.asc())
+        ).order_by(Trade.closed_at.asc())
         return list(self.session.scalars(stmt).all())
 
     def get_this_week(self) -> list[Trade]:

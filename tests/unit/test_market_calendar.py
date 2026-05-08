@@ -175,6 +175,21 @@ class TestNextMarketTimes:
 # NEW TESTS: Coverage for risk auditor fixes
 # ──────────────────────────────────────────────────────────────────────────────
 
+class TestNextMarketOpenMonday:
+    def test_next_market_open_from_monday_is_7_days(self):
+        """NEW-03: next_market_open() from Monday returns NEXT Monday (7 days), not today."""
+        # 2024-01-08 was a Monday
+        monday = dt_utc(2024, 1, 8, 10, 0)
+        cal = make_calendar()
+        with patch("bot.core.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = monday
+            mock_dt.side_effect = lambda *a, **kw: __import__("datetime").datetime(*a, **kw)
+            next_open = cal.next_market_open("EURUSD")
+        assert next_open.weekday() == 0  # Monday
+        assert next_open > monday
+        assert (next_open - monday).days >= 6  # at least 6 days ahead
+
+
 class TestWeekendFridayClose:
     def test_is_weekend_friday_after_21_utc(self):
         """M-04: Friday after 21:00 UTC is treated as weekend."""

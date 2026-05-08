@@ -280,14 +280,18 @@ class OrderValidator:
     def _check_pause_active(self, active_pause) -> LimitCheckResult | None:
         """H-01: Verifica si hay una pausa activa de riesgo.
 
-        Recibe active_pause ya cargado desde validate() para evitar doble consulta a DB.
+        Usa el active_pause pre-cargado en validate() — NO abre una segunda
+        sesión de DB llamando a is_paused(), eliminando el race condition.
+        Una pausa es activa si resume_at es None (permanente) o aún no expiró.
         """
-        if self._limits.is_paused():
-            reason = active_pause.reason if active_pause else "Active risk pause"
+        if active_pause is None:
+            return None
+        now = datetime.now(timezone.utc)
+        if active_pause.resume_at is None or now < active_pause.resume_at:
             return LimitCheckResult(
                 passed=False, check_name="pause_active",
-                reason=reason, severity="ERROR",
-                resume_at=active_pause.resume_at if active_pause else None,
+                reason=active_pause.reason, severity="ERROR",
+                resume_at=active_pause.resume_at,
             )
         return None
 

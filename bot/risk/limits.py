@@ -247,13 +247,15 @@ class RiskLimits:
             return True
 
     def get_active_pause(self):
-        try:
-            with get_session() as session:
-                repo = RiskPauseRepository(session)
-                return repo.get_active()
-        except Exception:
-            logger.exception("Could not get active pause")
-            return None
+        """Retorna la pausa activa actual, o None si no hay ninguna.
+
+        C-03: NO captura excepciones — las deja propagar hacia el caller
+        (validate() en OrderValidator) que las maneja de forma fail-closed
+        rechazando la orden con severidad CRITICAL.
+        """
+        with get_session() as session:
+            repo = RiskPauseRepository(session)
+            return repo.get_active()
 
     def pause_until(self, resume_at: datetime | None, reason: str, severity: str) -> None:
         try:
