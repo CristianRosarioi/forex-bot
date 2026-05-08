@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from bot.core.event_bus import EventBus, EventType
@@ -13,7 +14,7 @@ from bot.analysis.trend import analyze_trend
 from bot.analysis.volume import analyze_volume
 from bot.strategy.base import StrategyContext, Signal as StrategySignal
 from bot.risk.validator import OrderRequest, OrderValidator
-from bot.infra.logger import get_logger, log_event
+from bot.infra.logger import get_logger
 from bot.db.session import get_session
 from bot.db.repository import SignalRepository
 
@@ -78,16 +79,7 @@ class TradingEngine:
         )
         self._feed_thread.start()
 
-        # Log engine start event
-        log_event(
-            event_type=EventType.SIGNAL_GENERATED,
-            severity="INFO",
-            module=__name__,
-            message=f"TradingEngine started in {self._settings.mode.value} mode",
-            context={"mode": self._settings.mode.value},
-        )
-
-        logger.info("Engine running. Waiting for bars...")
+        logger.info("Engine running in %s mode. Waiting for bars...", self._settings.mode.value)
         self._stop_event.wait()  # block until stop()
 
     def stop(self) -> None:
@@ -174,6 +166,8 @@ class TradingEngine:
         account_state = self._get_account_state()
         if account_state is None:
             logger.warning("Cannot validate signal: account state unavailable")
+            # F-04: persist before discarding — audit trail must be complete for ALL signals
+            self._persist_signal(signal, rejection_reason="account_state_unavailable")
             return
 
         # Build OrderRequest and validate
@@ -192,32 +186,14 @@ class TradingEngine:
             result = self._validator.validate(request, account_state)
         except ValueError as e:
             logger.error("Validation error (bad account state): %s", e)
+            self._persist_signal(signal, rejection_reason=f"validation_error: {e}")
             return
 
-        # Persist signal to DB
-        from datetime import datetime, timezone
-        signal_data = {
-            "generated_at": datetime.now(timezone.utc),
-            "symbol": signal.symbol,
-            "timeframe": signal.timeframe,
-            "strategy_name": signal.strategy_name,
-            "signal_type": signal.signal_type,
-            "direction": signal.direction,
-            "entry_price": signal.entry_price,
-            "sl_price": signal.sl_price,
-            "tp_price": signal.tp_price,
-            "reason": signal.reason,
-            "bot_mode": self._settings.mode.value,
-            "acted_on": False,
-            "rejection_reason": None if result.approved else result.rejection_reason,
-        }
-
-        try:
-            with get_session() as session:
-                repo = SignalRepository(session)
-                repo.create(signal_data)
-        except Exception:
-            logger.exception("Failed to persist signal to DB")
+        # F-04: persist ALL signals (approved AND rejected) before any publish/log action
+        self._persist_signal(
+            signal,
+            rejection_reason=None if result.approved else result.rejection_reason,
+        )
 
         if result.approved:
             mode = self._settings.mode.value
@@ -250,6 +226,34 @@ class TradingEngine:
                 "Signal REJECTED [%s]: %s",
                 result.rejection_severity, result.rejection_reason,
             )
+
+    def _persist_signal(self, signal: StrategySignal, rejection_reason: str | None = None) -> None:
+        """Persists a signal to DB with acted_on=False.
+
+        Called for ALL signals regardless of validation outcome — every signal
+        must have an audit record.
+        """
+        signal_data = {
+            "generated_at": datetime.now(timezone.utc),
+            "symbol": signal.symbol,
+            "timeframe": signal.timeframe,
+            "strategy_name": signal.strategy_name,
+            "signal_type": signal.signal_type,
+            "direction": signal.direction,
+            "entry_price": signal.entry_price,
+            "sl_price": signal.sl_price,
+            "tp_price": signal.tp_price,
+            "reason": signal.reason,
+            "bot_mode": self._settings.mode.value,
+            "acted_on": False,
+            "rejection_reason": rejection_reason,
+        }
+        try:
+            with get_session() as session:
+                repo = SignalRepository(session)
+                repo.create(signal_data)
+        except Exception:
+            logger.exception("Failed to persist signal to DB")
 
     def _get_account_state(self) -> dict | None:
         """Gets account state from MT5. Returns None if unavailable."""

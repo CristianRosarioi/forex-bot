@@ -23,7 +23,8 @@ from bot.risk.sizing import PositionSizer
 from bot.analysis.levels import LevelManager
 from bot.strategy.registry import load_default_strategies
 from bot.core.engine import TradingEngine
-from bot.db.session import init_engine, get_session
+import bot.db.session as _db_session
+from bot.db.session import init_engine
 from bot.db.repository import (
     TradeRepository, DrawdownRepository, SignalRepository
 )
@@ -64,31 +65,33 @@ def build_engine() -> TradingEngine:
     market_calendar = MarketCalendar(connector=connector)
     eco_calendar = EconomicCalendar(event_bus=bus)
 
-    # Build validator with fresh session (validator stores repos internally)
-    with get_session() as session:
-        trade_repo = TradeRepository(session)
-        drawdown_repo = DrawdownRepository(session)
-        signal_repo_inner = SignalRepository(session)
+    # Build repos with a long-lived session.
+    # The validator's repos must outlive build_engine() and remain valid at runtime.
+    # We use SessionLocal() directly (not get_session()) so the session is never
+    # auto-closed when this function returns — it stays open for the bot's lifetime.
+    _repo_session = _db_session.SessionLocal()
+    trade_repo = TradeRepository(_repo_session)
+    drawdown_repo = DrawdownRepository(_repo_session)
 
-        sizer = PositionSizer(settings=settings.risk, trade_repo=trade_repo)
-        limits = RiskLimits(
-            settings=settings.risk,
-            trade_repo=trade_repo,
-            drawdown_repo=drawdown_repo,
-            event_bus=bus,
-        )
-        validator = OrderValidator(
-            settings=settings.risk,
-            trade_repo=trade_repo,
-            drawdown_repo=drawdown_repo,
-            signal_repo=signal_repo_inner,
-            position_sizer=sizer,
-            risk_limits=limits,
-            event_bus=bus,
-            market_calendar=market_calendar,
-            economic_calendar=eco_calendar,
-            bot_mode=settings.mode.value,
-        )
+    sizer = PositionSizer(settings=settings.risk, trade_repo=trade_repo)
+    limits = RiskLimits(
+        settings=settings.risk,
+        trade_repo=trade_repo,
+        drawdown_repo=drawdown_repo,
+        event_bus=bus,
+    )
+    validator = OrderValidator(
+        settings=settings.risk,
+        trade_repo=trade_repo,
+        drawdown_repo=drawdown_repo,
+        signal_repo=None,  # validator.validate() does not use signal_repo; engine persists separately
+        position_sizer=sizer,
+        risk_limits=limits,
+        event_bus=bus,
+        market_calendar=market_calendar,
+        economic_calendar=eco_calendar,
+        bot_mode=settings.mode.value,
+    )
 
     # Persistence and notifications
     EventPersistenceHandler(bus)
