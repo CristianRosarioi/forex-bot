@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from bot.strategy.base import BaseStrategy, StrategyContext, Signal
 from bot.analysis.levels import Level
 from bot.analysis.volume import is_volume_supportive
@@ -18,9 +20,18 @@ REJECTION_BODY_MIN_PCT = 0.4
 SL_BUFFER_PCT = 0.05 / 100             # 5 pips buffer
 RR_TARGET = 2.0
 
+# Cooldown after a signal fires: prevents re-detecting the same level for N bars
+COOLDOWN_BARS_M15 = 16   # 16 × 15 min = 4 h
+COOLDOWN_BARS_H1 = 8     # 8 × 60 min = 8 h
+
 
 class RetestStrategy(BaseStrategy):
+    # Nota: _level_cooldowns es estado operativo de sesión, no persistente.
+    # Se resetea en cada reinicio del bot — comportamiento aceptado.
     name = "retest"
+
+    def __init__(self) -> None:
+        self._level_cooldowns: dict[str, datetime] = {}
 
     def analyze(self, ctx: StrategyContext) -> Signal | None:
         """
@@ -49,12 +60,28 @@ class RetestStrategy(BaseStrategy):
         bar_low = float(last_bar["low"])
         current_bar_idx = len(ctx.bars) - 1
 
+        # Purge expired cooldowns
+        now = datetime.now()
+        expired = [lid for lid, until in self._level_cooldowns.items() if now >= until]
+        for lid in expired:
+            del self._level_cooldowns[lid]
+
+        # Compute cooldown duration from timeframe
+        if ctx.timeframe == "M15":
+            cooldown_delta = timedelta(minutes=COOLDOWN_BARS_M15 * 15)
+        else:  # H1
+            cooldown_delta = timedelta(hours=COOLDOWN_BARS_H1)
+
         # Get flip_active levels
         flip_levels = [lv for lv in ctx.levels if lv.flip_active and lv.is_broken]
 
         candidates: list[Signal] = []
 
         for level in flip_levels:
+            # Skip levels in cooldown
+            if level.id in self._level_cooldowns:
+                continue
+
             # a. broken_at must exist and bars since break <= MAX_BARS_AFTER_BREAK
             if level.broken_at is None:
                 continue
@@ -161,6 +188,7 @@ class RetestStrategy(BaseStrategy):
                     "body_pct": round(body_pct, 3),
                 },
             )
+            self._level_cooldowns[level.id] = now + cooldown_delta
             candidates.append(sig)
 
         if not candidates:

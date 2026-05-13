@@ -8,6 +8,9 @@ from dataclasses import dataclass, field
 
 from bot.analysis.swing import SwingPoint, get_swing_pairs_for_levels
 
+MAX_BREAKS_FOR_VALID_LEVEL = 7   # niveles con 7+ touches pierden relevancia técnica
+MAX_FLIP_AGE_BARS = 50           # velas máximas antes de expirar un nivel flip_active
+
 
 @dataclass
 class Level:
@@ -142,6 +145,17 @@ class LevelManager:
                 to_remove.append(level.id)
                 continue
 
+            # Expire flip_active levels after MAX_FLIP_AGE_BARS since the break
+            if level.flip_active and level.broken_at is not None:
+                times = bars["time"].values
+                break_bar_idx = 0
+                for idx, t in enumerate(times):
+                    if int(t) <= level.broken_at:
+                        break_bar_idx = idx
+                if current_bar_idx - break_bar_idx > MAX_FLIP_AGE_BARS:
+                    to_remove.append(level.id)
+                    continue
+
             tol_abs = level.price * tolerance_pct
 
             # Check if broken: close crossed level by more than tolerance
@@ -192,11 +206,13 @@ class LevelManager:
             self._levels[key] = [lv for lv in self._levels[key] if lv.id not in to_remove]
 
     def get_active_levels(self, symbol: str, timeframe: str) -> list[Level]:
-        """Returns levels that are either unbroken (is_broken=False) or flip_active=True."""
+        """Returns levels that are either unbroken (is_broken=False) or flip_active=True,
+        excluding over-touched levels (>= MAX_BREAKS_FOR_VALID_LEVEL touches)."""
         key = self._key(symbol, timeframe)
         return [
             lv for lv in self._levels.get(key, [])
-            if not lv.is_broken or lv.flip_active
+            if (not lv.is_broken or lv.flip_active)
+            and len(lv.touches) < MAX_BREAKS_FOR_VALID_LEVEL
         ]
 
     def get_nearest_level(

@@ -1,10 +1,10 @@
-"""Configuración de logging estructurado (JSON). Escribe a stdout y a archivo con rotación diaria."""
+"""Configuración de logging estructurado (JSON). Escribe a stdout y a archivo con rotación por tamaño."""
 
 import json
 import logging
 import os
 import sys
-from logging.handlers import TimedRotatingFileHandler
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 _LOGS_DIR = Path(__file__).parent.parent.parent / "logs"
@@ -82,14 +82,14 @@ def get_logger(name: str) -> logging.Logger:
 
     logger.setLevel(_LOG_LEVEL)
 
-    # — Handler de archivo: JSON, rotación diaria, 30 días de retención —
+    # — Handler de archivo: JSON, rotación por tamaño (evita PermissionError en Windows) —
     _ensure_logs_dir()
-    file_handler = TimedRotatingFileHandler(
+    file_handler = RotatingFileHandler(
         filename=_LOGS_DIR / "bot.log",
-        when="midnight",
-        interval=1,
+        maxBytes=10 * 1024 * 1024,  # 10 MB por archivo
         backupCount=30,
         encoding="utf-8",
+        delay=True,
     )
     file_handler.setFormatter(_JsonFormatter())
     file_handler.setLevel(_LOG_LEVEL)
