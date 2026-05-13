@@ -4,7 +4,6 @@ import signal
 import sys
 from pathlib import Path
 
-# Ensure project root is in path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import settings, BotMode
@@ -31,6 +30,13 @@ from bot.db.repository import (
 
 logger = get_logger(__name__)
 
+_MODE_LABELS = {
+    "SHADOW": "SHADOW MODE - señales solo",
+    "PAPER":  "PAPER MODE - ejecución virtual",
+    "DEMO":   "DEMO MODE - cuenta demo MT5",
+    "LIVE":   "LIVE MODE - cuenta real",
+}
+
 BANNER = """\
 +----------------------------------------------+
 |      FOREX BOT - {mode:<28}|
@@ -44,7 +50,6 @@ BANNER = """\
 
 
 def build_engine() -> TradingEngine:
-    # Init DB
     init_engine()
 
     bus = EventBus()
@@ -60,10 +65,6 @@ def build_engine() -> TradingEngine:
     market_calendar = MarketCalendar(connector=connector)
     eco_calendar = EconomicCalendar(event_bus=bus)
 
-    # Build repos with a long-lived session.
-    # The validator's repos must outlive build_engine() and remain valid at runtime.
-    # We use SessionLocal() directly (not get_session()) so the session is never
-    # auto-closed when this function returns — it stays open for the bot's lifetime.
     _repo_session = _db_session.SessionLocal()
     trade_repo = TradeRepository(_repo_session)
     drawdown_repo = DrawdownRepository(_repo_session)
@@ -79,7 +80,7 @@ def build_engine() -> TradingEngine:
         settings=settings.risk,
         trade_repo=trade_repo,
         drawdown_repo=drawdown_repo,
-        signal_repo=None,  # validator.validate() does not use signal_repo; engine persists separately
+        signal_repo=None,
         position_sizer=sizer,
         risk_limits=limits,
         event_bus=bus,
@@ -88,15 +89,45 @@ def build_engine() -> TradingEngine:
         bot_mode=settings.mode.value,
     )
 
-    # Persistence and notifications
     EventPersistenceHandler(bus)
     telegram = None
     if settings.telegram.bot_token and settings.telegram.chat_id:
         telegram = TelegramNotifier(bus, settings.telegram)
-        telegram.start()  # subscribe to events and send "Telegram notifier conectado"
+        telegram.start()
 
     registry = load_default_strategies()
     level_manager = LevelManager()
+
+    order_manager = None
+    position_tracker = None
+
+    if settings.mode == BotMode.PAPER:
+        from bot.execution.order_manager import VirtualOrderManager
+        from bot.execution.position_tracker import PositionTracker
+
+        _exec_session = _db_session.SessionLocal()
+        exec_trade_repo = TradeRepository(_exec_session)
+        exec_signal_repo = SignalRepository(_exec_session)
+        exec_drawdown_repo = DrawdownRepository(_exec_session)
+
+        order_manager = VirtualOrderManager(
+            connector=connector,
+            event_bus=bus,
+            trade_repo=exec_trade_repo,
+            signal_repo=exec_signal_repo,
+        )
+        position_tracker = PositionTracker(
+            connector=connector,
+            event_bus=bus,
+            trade_repo=exec_trade_repo,
+            drawdown_repo=exec_drawdown_repo,
+            settings=settings.risk,
+        )
+    elif settings.mode not in (BotMode.SHADOW,):
+        raise ValueError(
+            f"Mode {settings.mode.value} not implemented yet. "
+            "Use SHADOW or PAPER."
+        )
 
     engine = TradingEngine(
         settings=settings,
@@ -107,29 +138,25 @@ def build_engine() -> TradingEngine:
         validator=validator,
         registry=registry,
         level_manager=level_manager,
-        signal_repo=None,  # engine creates its own sessions per signal
+        signal_repo=None,
         economic_calendar=eco_calendar,
         market_calendar=market_calendar,
         telegram=telegram,
+        order_manager=order_manager,
+        position_tracker=position_tracker,
     )
     return engine
 
 
 def main():
     mode = settings.mode.value
+    mode_label = _MODE_LABELS.get(mode, mode)
 
-    if settings.mode != BotMode.SHADOW:
-        logger.warning(
-            "ATENCION: bot en modo %s pero la ejecucion solo esta implementada hasta SHADOW",
-            mode,
-        )
-
-    # Print banner
     registry = load_default_strategies()
     strategy_names = ", ".join(s.name for s in registry.get_all_enabled()) or "none"
 
     print(BANNER.format(
-        mode=mode,
+        mode=mode_label[:32],
         symbols="EURUSD, GBPUSD, ...",
         strategies=strategy_names[:32],
         telegram="Y" if (settings.telegram.bot_token and settings.telegram.chat_id) else "N",

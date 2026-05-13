@@ -265,6 +265,23 @@ class TradeRepository:
         ).order_by(Trade.opened_at.asc())
         return list(self.session.scalars(stmt).all())
 
+    def update_sl(self, trade_id: int, new_sl: float) -> None:
+        """Actualiza sl_price de un trade abierto (ej. breakeven)."""
+        stmt = select(Trade).where(Trade.id == trade_id)
+        trade = self.session.scalar(stmt)
+        if trade is not None:
+            trade.sl_price = new_sl
+            self.session.flush()
+
+    def get_open_paper(self) -> list[Trade]:
+        """Retorna trades abiertos en PAPER mode (closed_at IS NULL)."""
+        stmt = (
+            select(Trade)
+            .where(Trade.closed_at.is_(None), Trade.bot_mode == "PAPER")
+            .order_by(Trade.opened_at.asc())
+        )
+        return list(self.session.scalars(stmt).all())
+
     def get_consecutive_losses(self) -> int:
         """Cuenta las pérdidas consecutivas desde el último trade cerrado hacia atrás.
 
