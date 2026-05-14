@@ -6,7 +6,7 @@ import pytest
 from decimal import Decimal
 from unittest.mock import MagicMock, patch, call
 
-from bot.execution.order_manager import VirtualOrderManager, RealOrderManager, MAX_SLIPPAGE_PIPS
+from bot.execution.order_manager import VirtualOrderManager, MAX_SLIPPAGE_PIPS
 from bot.core.event_bus import EventBus, EventType
 from bot.strategy.base import Signal as StrategySignal
 
@@ -245,8 +245,4 @@ class TestVirtualOrderManagerEvents:
         assert len(placed_events) == 0
 
 
-class TestRealOrderManager:
-    def test_raises_not_implemented(self):
-        mgr = RealOrderManager()
-        with pytest.raises(NotImplementedError):
-            mgr.execute(MagicMock(), Decimal("0.01"), {})
+# RealOrderManager tests are in tests/unit/test_real_order_manager.py
