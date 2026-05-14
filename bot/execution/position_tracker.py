@@ -118,7 +118,7 @@ class PositionTracker:
                     if new_sl is not None:
                         trade_repo.update_sl(trade.id, new_sl)
                         logger.info(
-                            "[PAPER] Breakeven SL moved: %s %s sl %.5f → %.5f",
+                            "[PAPER] Breakeven SL moved: %s %s sl %.5f -> %.5f",
                             trade.symbol, trade.direction,
                             float(trade.sl_price), new_sl,
                         )
