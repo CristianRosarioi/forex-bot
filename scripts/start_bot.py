@@ -100,10 +100,13 @@ def build_engine() -> TradingEngine:
 
     order_manager = None
     position_tracker = None
+    report_scheduler = None
 
     if settings.mode == BotMode.PAPER:
         from bot.execution.order_manager import VirtualOrderManager
         from bot.execution.position_tracker import PositionTracker
+        from bot.analytics.reporter import PerformanceReporter
+        from bot.analytics.scheduler import ReportScheduler
 
         _exec_session = _db_session.SessionLocal()
         exec_trade_repo = TradeRepository(_exec_session)
@@ -123,6 +126,17 @@ def build_engine() -> TradingEngine:
             drawdown_repo=exec_drawdown_repo,
             settings=settings.risk,
         )
+
+        _analytics_session = _db_session.SessionLocal()
+        analytics_trade_repo = TradeRepository(_analytics_session)
+        reporter = PerformanceReporter(
+            trade_repo=analytics_trade_repo,
+            telegram_notifier=telegram,
+            event_bus=bus,
+        )
+        report_scheduler = ReportScheduler(reporter=reporter, event_bus=bus)
+        report_scheduler.start()
+
     elif settings.mode not in (BotMode.SHADOW,):
         raise ValueError(
             f"Mode {settings.mode.value} not implemented yet. "
