@@ -125,6 +125,43 @@ def build_engine() -> TradingEngine:
             trade_repo=exec_trade_repo,
             drawdown_repo=exec_drawdown_repo,
             settings=settings.risk,
+            bot_mode="PAPER",
+        )
+
+        _analytics_session = _db_session.SessionLocal()
+        analytics_trade_repo = TradeRepository(_analytics_session)
+        reporter = PerformanceReporter(
+            trade_repo=analytics_trade_repo,
+            telegram_notifier=telegram,
+            event_bus=bus,
+        )
+        report_scheduler = ReportScheduler(reporter=reporter, event_bus=bus)
+        report_scheduler.start()
+
+    elif settings.mode == BotMode.DEMO:
+        from bot.execution.order_manager import RealOrderManager
+        from bot.execution.position_tracker import PositionTracker
+        from bot.analytics.reporter import PerformanceReporter
+        from bot.analytics.scheduler import ReportScheduler
+
+        _exec_session = _db_session.SessionLocal()
+        exec_trade_repo = TradeRepository(_exec_session)
+        exec_signal_repo = SignalRepository(_exec_session)
+        exec_drawdown_repo = DrawdownRepository(_exec_session)
+
+        order_manager = RealOrderManager(
+            connector=connector,
+            event_bus=bus,
+            trade_repo=exec_trade_repo,
+            signal_repo=exec_signal_repo,
+        )
+        position_tracker = PositionTracker(
+            connector=connector,
+            event_bus=bus,
+            trade_repo=exec_trade_repo,
+            drawdown_repo=exec_drawdown_repo,
+            settings=settings.risk,
+            bot_mode="DEMO",
         )
 
         _analytics_session = _db_session.SessionLocal()
@@ -140,7 +177,7 @@ def build_engine() -> TradingEngine:
     elif settings.mode not in (BotMode.SHADOW,):
         raise ValueError(
             f"Mode {settings.mode.value} not implemented yet. "
-            "Use SHADOW or PAPER."
+            "Use SHADOW, PAPER, or DEMO."
         )
 
     engine = TradingEngine(

@@ -43,12 +43,14 @@ class PositionTracker:
         trade_repo: "TradeRepository",
         drawdown_repo: "DrawdownRepository",
         settings: "RiskSettings",
+        bot_mode: str = "PAPER",
     ) -> None:
         self._connector = connector
         self._bus = event_bus
         self._trade_repo = trade_repo
         self._drawdown_repo = drawdown_repo
         self._settings = settings
+        self._bot_mode = bot_mode.upper()
         self._stop_event = threading.Event()
 
     def stop(self) -> None:
@@ -67,13 +69,21 @@ class PositionTracker:
 
     def _check_positions(self) -> None:
         """Inspecciona cada posición abierta y aplica la acción correspondiente."""
+        # For DEMO/LIVE: first sync any positions MT5 closed server-side (SL/TP hits)
+        if self._bot_mode in ("DEMO", "LIVE"):
+            self._sync_closed_positions()
+
         events_to_publish: list[tuple[str, dict]] = []
 
         with get_session() as session:
             trade_repo = TradeRepository(session)
             drawdown_repo = DrawdownRepository(session)
 
-            trades = trade_repo.get_open_paper()
+            if self._bot_mode in ("DEMO", "LIVE"):
+                trades = trade_repo.get_open_live()
+            else:
+                trades = trade_repo.get_open_paper()
+
             if not trades:
                 return
 
@@ -82,49 +92,145 @@ class PositionTracker:
                 if current_price is None:
                     continue
 
-                close_reason = self._check_close_conditions(trade, current_price)
-                if close_reason:
-                    pnl_pips, pnl_currency = self._calc_pnl(trade, current_price)
-                    closed_at = datetime.now(timezone.utc)
-                    trade_repo.close(
-                        trade_id=trade.id,
-                        exit_price=current_price,
-                        closed_at=closed_at,
-                        close_reason=close_reason,
-                        pnl_pips=pnl_pips,
-                        pnl_currency=pnl_currency,
-                    )
-                    logger.info(
-                        "[PAPER] Closed %s %s @ %.5f reason=%s pnl=%.2f pips / %.2f",
-                        trade.symbol, trade.direction, current_price,
-                        close_reason, pnl_pips, pnl_currency,
-                    )
-                    self._take_snapshot(trade, pnl_currency, trade_repo, drawdown_repo)
-                    events_to_publish.append((EventType.POSITION_CLOSED, {
-                        "trade_id": trade.id,
-                        "symbol": trade.symbol,
-                        "direction": trade.direction,
-                        "entry_price": float(trade.entry_price),
-                        "exit_price": current_price,
-                        "close_reason": close_reason,
-                        "pnl_pips": pnl_pips,
-                        "pnl_currency": pnl_currency,
-                        "volume": float(trade.volume),
-                        "strategy_name": trade.strategy_name,
-                        "bot_mode": trade.bot_mode,
-                    }))
-                else:
+                if self._bot_mode in ("DEMO", "LIVE"):
+                    # MT5 server manages SL/TP execution; we only track breakeven in DB.
+                    # TODO: add mt5.order_modify() call here to also update SL in MT5.
                     new_sl = self._calc_breakeven_sl(trade, current_price)
                     if new_sl is not None:
                         trade_repo.update_sl(trade.id, new_sl)
                         logger.info(
-                            "[PAPER] Breakeven SL moved: %s %s sl %.5f -> %.5f",
-                            trade.symbol, trade.direction,
+                            "[%s] Breakeven SL moved: %s %s sl %.5f -> %.5f",
+                            self._bot_mode, trade.symbol, trade.direction,
                             float(trade.sl_price), new_sl,
                         )
+                else:
+                    close_reason = self._check_close_conditions(trade, current_price)
+                    if close_reason:
+                        pnl_pips, pnl_currency = self._calc_pnl(trade, current_price)
+                        closed_at = datetime.now(timezone.utc)
+                        trade_repo.close(
+                            trade_id=trade.id,
+                            exit_price=current_price,
+                            closed_at=closed_at,
+                            close_reason=close_reason,
+                            pnl_pips=pnl_pips,
+                            pnl_currency=pnl_currency,
+                        )
+                        logger.info(
+                            "[PAPER] Closed %s %s @ %.5f reason=%s pnl=%.2f pips / %.2f",
+                            trade.symbol, trade.direction, current_price,
+                            close_reason, pnl_pips, pnl_currency,
+                        )
+                        self._take_snapshot(trade, pnl_currency, trade_repo, drawdown_repo)
+                        events_to_publish.append((EventType.POSITION_CLOSED, {
+                            "trade_id": trade.id,
+                            "symbol": trade.symbol,
+                            "direction": trade.direction,
+                            "entry_price": float(trade.entry_price),
+                            "exit_price": current_price,
+                            "close_reason": close_reason,
+                            "pnl_pips": pnl_pips,
+                            "pnl_currency": pnl_currency,
+                            "volume": float(trade.volume),
+                            "strategy_name": trade.strategy_name,
+                            "bot_mode": trade.bot_mode,
+                        }))
+                    else:
+                        new_sl = self._calc_breakeven_sl(trade, current_price)
+                        if new_sl is not None:
+                            trade_repo.update_sl(trade.id, new_sl)
+                            logger.info(
+                                "[PAPER] Breakeven SL moved: %s %s sl %.5f -> %.5f",
+                                trade.symbol, trade.direction,
+                                float(trade.sl_price), new_sl,
+                            )
 
         for event_type, payload in events_to_publish:
             self._bus.publish(event_type, payload)
+
+    def _sync_closed_positions(self) -> None:
+        """Detecta posiciones cerradas por MT5 server-side (SL/TP) y actualiza la DB."""
+        import MetaTrader5 as mt5
+
+        events_to_publish: list[tuple[str, dict]] = []
+
+        with get_session() as session:
+            trade_repo = TradeRepository(session)
+            drawdown_repo = DrawdownRepository(session)
+
+            trades = trade_repo.get_open_live()
+            for trade in trades:
+                positions = mt5.positions_get(ticket=int(trade.mt5_ticket))
+                if positions is not None and len(positions) > 0:
+                    continue  # Still open in MT5
+
+                # Position was closed server-side — get exit info from deal history
+                exit_price, close_reason = self._get_mt5_close_info(int(trade.mt5_ticket))
+                if exit_price is None:
+                    exit_price = self._get_current_price(trade.symbol, trade.direction)
+                    if exit_price is None:
+                        logger.warning(
+                            "[%s] Cannot determine exit price for trade %d ticket=%d — skipping",
+                            self._bot_mode, trade.id, trade.mt5_ticket,
+                        )
+                        continue
+
+                pnl_pips, pnl_currency = self._calc_pnl(trade, exit_price)
+                closed_at = datetime.now(timezone.utc)
+
+                trade_repo.close(
+                    trade_id=trade.id,
+                    exit_price=exit_price,
+                    closed_at=closed_at,
+                    close_reason=close_reason,
+                    pnl_pips=pnl_pips,
+                    pnl_currency=pnl_currency,
+                )
+                logger.info(
+                    "[%s] MT5-closed position synced: %s %s @ %.5f reason=%s pnl=%.2f pips",
+                    self._bot_mode, trade.symbol, trade.direction,
+                    exit_price, close_reason, pnl_pips,
+                )
+                self._take_snapshot(trade, pnl_currency, trade_repo, drawdown_repo)
+                events_to_publish.append((EventType.POSITION_CLOSED, {
+                    "trade_id": trade.id,
+                    "symbol": trade.symbol,
+                    "direction": trade.direction,
+                    "entry_price": float(trade.entry_price),
+                    "exit_price": exit_price,
+                    "close_reason": close_reason,
+                    "pnl_pips": pnl_pips,
+                    "pnl_currency": pnl_currency,
+                    "volume": float(trade.volume),
+                    "strategy_name": trade.strategy_name,
+                    "bot_mode": trade.bot_mode,
+                }))
+
+        for event_type, payload in events_to_publish:
+            self._bus.publish(event_type, payload)
+
+    def _get_mt5_close_reason(self, ticket: int) -> str:
+        """Mapea el deal de cierre de MT5 a close_reason: 'SL', 'TP' o 'unknown'."""
+        import MetaTrader5 as mt5
+        deals = mt5.history_deals_get(position=ticket)
+        if not deals:
+            return "unknown"
+        for deal in reversed(deals):
+            if deal.entry == mt5.DEAL_ENTRY_OUT:
+                return "SL" if deal.profit <= 0 else "TP"
+        return "unknown"
+
+    def _get_mt5_close_info(self, ticket: int) -> tuple[float | None, str]:
+        """Retorna (exit_price, close_reason) del historial de deals de MT5."""
+        import MetaTrader5 as mt5
+        deals = mt5.history_deals_get(position=ticket)
+        if not deals:
+            return None, "unknown"
+        for deal in reversed(deals):
+            if deal.entry == mt5.DEAL_ENTRY_OUT:
+                reason = "SL" if deal.profit <= 0 else "TP"
+                return float(deal.price), reason
+        return None, "unknown"
 
     def _check_close_conditions(self, trade: "Trade", current_price: float) -> str | None:
         """Retorna la razón de cierre si aplica, o None para continuar."""
@@ -276,22 +382,22 @@ class PositionTracker:
             return
 
         try:
-            today_trades = [t for t in trade_repo.get_today() if t.bot_mode == "PAPER"]
+            today_trades = [t for t in trade_repo.get_today() if t.bot_mode == self._bot_mode]
             daily_pnl = sum(float(t.pnl_currency or 0) for t in today_trades)
 
             week_trades = [
                 t for t in trade_repo.get_this_week()
-                if t.bot_mode == "PAPER" and t.closed_at is not None
+                if t.bot_mode == self._bot_mode and t.closed_at is not None
             ]
             weekly_pnl = sum(float(t.pnl_currency or 0) for t in week_trades)
 
             month_trades = [
                 t for t in trade_repo.get_this_month()
-                if t.bot_mode == "PAPER" and t.closed_at is not None
+                if t.bot_mode == self._bot_mode and t.closed_at is not None
             ]
             monthly_pnl = sum(float(t.pnl_currency or 0) for t in month_trades)
 
-            open_positions = sum(1 for t in trade_repo.get_open() if t.bot_mode == "PAPER")
+            open_positions = sum(1 for t in trade_repo.get_open() if t.bot_mode == self._bot_mode)
             consecutive_losses = trade_repo.get_consecutive_losses()
 
             daily_dd = max(0.0, -daily_pnl / balance * 100) if balance > 0 else 0.0

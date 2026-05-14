@@ -282,6 +282,15 @@ class TradeRepository:
         )
         return list(self.session.scalars(stmt).all())
 
+    def get_open_live(self) -> list[Trade]:
+        """Retorna trades abiertos en DEMO o LIVE mode (closed_at IS NULL)."""
+        stmt = (
+            select(Trade)
+            .where(Trade.closed_at.is_(None), Trade.bot_mode.in_(["DEMO", "LIVE"]))
+            .order_by(Trade.opened_at.asc())
+        )
+        return list(self.session.scalars(stmt).all())
+
     def get_consecutive_losses(self) -> int:
         """Cuenta las pérdidas consecutivas desde el último trade cerrado hacia atrás.
 
