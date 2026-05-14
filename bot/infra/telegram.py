@@ -251,6 +251,23 @@ class TelegramNotifier:
                     time.sleep(delay)
         logger.error("Telegram: all send attempts failed")
 
+    def send_plain(self, text: str) -> None:
+        """Envía texto plano sin parse_mode (para reportes con pips/porcentajes)."""
+        delays = [2, 5, 10]
+        for attempt, delay in enumerate(delays, 1):
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._bot.send_message(chat_id=self._chat_id, text=text),
+                    self._loop,
+                )
+                future.result(timeout=30)
+                return
+            except Exception as exc:
+                logger.warning("Telegram plain send attempt %d failed: %s", attempt, exc)
+                if attempt < len(delays):
+                    time.sleep(delay)
+        logger.error("Telegram: all plain send attempts failed")
+
     # ------------------------------------------------------------------
     # Handler factory
     # ------------------------------------------------------------------
