@@ -29,5 +29,9 @@ class StrategyRegistry:
 def load_default_strategies() -> StrategyRegistry:
     registry = StrategyRegistry()
     from bot.strategy.retest import RetestStrategy
+    from bot.strategy.breakout import BreakoutStrategy
+    from bot.strategy.fade_failure import FadeFailureStrategy
     registry.register(RetestStrategy())
+    registry.register(BreakoutStrategy())
+    registry.register(FadeFailureStrategy())
     return registry
