@@ -19,42 +19,42 @@ symbols:
     enabled: true
     type: forex
     spread_max: 2.0
-    sessions: [tokyo, new_york, overlap]
+    sessions: [tokyo, london, new_york, overlap]
     risk_pct: 0.5
 
   AUDUSD:
     enabled: true
     type: forex
     spread_max: 2.5
-    sessions: [tokyo, london, new_york]
+    sessions: [tokyo, london, overlap]
     risk_pct: 0.5
 
   NZDUSD:
     enabled: true
     type: forex
     spread_max: 3.0
-    sessions: [tokyo, new_york]
+    sessions: [tokyo, london, overlap]
     risk_pct: 0.5
 
   USDCAD:
     enabled: true
     type: forex
     spread_max: 2.5
-    sessions: [new_york, overlap]
+    sessions: [london, new_york, overlap]
     risk_pct: 0.5
 
   GBPJPY:
     enabled: true
     type: forex
     spread_max: 4.0
-    sessions: [london, overlap]
+    sessions: [tokyo, london, overlap]
     risk_pct: 0.3  # par volátil → menor riesgo
 
   EURGBP:
     enabled: true
     type: forex
     spread_max: 2.0
-    sessions: [london]
+    sessions: [london, overlap]
     risk_pct: 0.5
 
   US500:
