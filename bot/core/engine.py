@@ -221,12 +221,12 @@ class TradingEngine:
                     "SHADOW MODE: would have executed %s %s — signal persisted, no order sent",
                     signal.direction, signal.symbol,
                 )
-            elif mode == "PAPER" and self._order_manager is not None:
+            elif mode in ("PAPER", "DEMO") and self._order_manager is not None:
                 trade = self._order_manager.execute(
                     signal, result.calculated_lots, account_state, signal_id=signal_id
                 )
                 if trade is not None:
-                    logger.info("[PAPER] Trade opened: %s %s", signal.symbol, signal.direction)
+                    logger.info("[%s] Trade opened: %s %s", mode, signal.symbol, signal.direction)
                     if signal_id is not None:
                         self._mark_signal_acted_on(signal_id)
 
