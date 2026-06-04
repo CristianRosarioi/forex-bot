@@ -15,7 +15,7 @@ MIN_TOUCHES_FOR_FADE = 2
 PROBE_BUFFER_PCT = 0.02 / 100    # wick must pierce at least 0.02% beyond level
 WICK_MIN_PCT = 0.30              # rejection wick >= 30% of candle range
 BODY_MIN_PCT = 0.35              # body >= 35% (avoids doji)
-SL_BUFFER_PCT = 0.05 / 100      # SL beyond the wick extreme
+SL_BUFFER_PCT = 0.10 / 100      # SL beyond the wick extreme
 RR_TARGET = 2.0
 
 COOLDOWN_BARS_M15 = 8

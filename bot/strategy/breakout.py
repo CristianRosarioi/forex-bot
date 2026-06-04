@@ -14,7 +14,7 @@ logger = get_logger(__name__)
 MIN_TOUCHES_BEFORE_BREAK = 2
 BREAKOUT_BODY_MIN_PCT = 0.50
 BREAKOUT_BUFFER_PCT = 0.02 / 100       # close must exceed level by 0.02%
-SL_BUFFER_PCT = 0.05 / 100             # SL just inside the broken level
+SL_BUFFER_PCT = 0.08 / 100             # SL just inside the broken level
 RR_TARGET = 2.0
 
 COOLDOWN_BARS_M15 = 8     # 8 × 15 min = 2 h

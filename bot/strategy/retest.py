@@ -17,7 +17,7 @@ BUFFER_PCT_FOR_BREAK = 0.02 / 100      # 0.02% (~2 pips EURUSD)
 BUFFER_PCT_FOR_RETEST = 0.05 / 100     # 0.05% (~5 pips EURUSD)
 MAX_BARS_AFTER_BREAK = 30
 REJECTION_BODY_MIN_PCT = 0.4
-SL_BUFFER_PCT = 0.05 / 100             # 5 pips buffer
+SL_BUFFER_PCT = 0.10 / 100             # 10 pips buffer
 RR_TARGET = 2.0
 
 # Cooldown after a signal fires: prevents re-detecting the same level for N bars
