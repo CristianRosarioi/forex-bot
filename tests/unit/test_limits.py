@@ -416,7 +416,12 @@ class TestCheckAll:
 
 
 class TestIsPausedWithDb:
-    """Integration test using real DB."""
+    """Tests de is_paused() sin DB real (mockeando get_session).
+
+    El test de ciclo de vida contra DB real vive ahora en
+    tests/integration/test_risk_limits_db.py, parcheando get_session hacia la
+    DB de TEST (antes hacía init_engine() y mutaba PRODUCCIÓN).
+    """
 
     def test_is_paused_no_engine_returns_true(self):
         """C-02: When DB engine is not initialized, is_paused() must return True (fail-closed)."""
@@ -426,32 +431,6 @@ class TestIsPausedWithDb:
             mock_gs.side_effect = RuntimeError("Engine not initialized")
             result = limits.is_paused()
         assert result is True  # fail-closed
-
-    def test_is_paused_with_real_db(self):
-        """Real DB integration test — requires initialized engine."""
-        from bot.db.session import init_engine, get_session
-        from bot.db.repository import RiskPauseRepository
-        try:
-            init_engine()
-        except Exception:
-            pytest.skip("DB not available")
-
-        # Deactivate any existing pauses first
-        with get_session() as session:
-            repo = RiskPauseRepository(session)
-            repo.deactivate_all()
-
-        limits = make_limits()
-        assert limits.is_paused() is False
-
-        # Create a pause
-        future = datetime.now(timezone.utc) + timedelta(hours=1)
-        limits.pause_until(future, "test pause", "WARNING")
-        assert limits.is_paused() is True
-
-        # Resume
-        limits.resume()
-        assert limits.is_paused() is False
 
 
 # ──────────────────────────────────────────────────────────────────────────────
