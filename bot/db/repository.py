@@ -291,7 +291,11 @@ class TradeRepository:
         )
         return list(self.session.scalars(stmt).all())
 
-    def get_consecutive_losses(self) -> int:
+    def get_consecutive_losses(
+        self,
+        bot_mode: str | None = None,
+        since: datetime | None = None,
+    ) -> int:
         """Cuenta las pérdidas consecutivas desde el último trade cerrado hacia atrás.
 
         M-05: Lógica de clasificación:
@@ -303,14 +307,23 @@ class TradeRepository:
         Itera desde el trade más reciente hacia el más antiguo hasta encontrar
         un trade ganador (pnl_currency > 0) o llegar al inicio.
 
+        Args:
+            bot_mode: Si se indica, sólo cuenta trades de ese modo (DEMO/PAPER/LIVE).
+                Evita que las pérdidas de un modo contaminen la racha de otro.
+            since: Si se indica, sólo cuenta trades con closed_at > since. Se usa
+                para romper el deadlock de consecutive losses: tras servir una
+                pausa, los trades anteriores a ella dejan de contar y la racha
+                efectiva vuelve a cero.
+
         Returns:
             Número de pérdidas consecutivas al final de la serie.
         """
-        stmt = (
-            select(Trade)
-            .where(Trade.closed_at.isnot(None))
-            .order_by(Trade.closed_at.desc())
-        )
+        stmt = select(Trade).where(Trade.closed_at.isnot(None))
+        if bot_mode is not None:
+            stmt = stmt.where(Trade.bot_mode == bot_mode)
+        if since is not None:
+            stmt = stmt.where(Trade.closed_at > since)
+        stmt = stmt.order_by(Trade.closed_at.desc())
         closed_trades = list(self.session.scalars(stmt).all())
 
         count = 0
@@ -522,6 +535,10 @@ class RiskPauseRepository:
 
     def create_pause(self, paused_at: datetime, resume_at: datetime | None,
                      reason: str, severity: str) -> RiskPause:
+        # PASO 3: al crear una pausa nueva, limpiamos las pausas vencidas que
+        # quedaron marcadas active=True (fuga histórica). Las pausas permanentes
+        # (resume_at IS NULL, p.ej. kill switch) NO se tocan.
+        self.deactivate_expired()
         pause = RiskPause(paused_at=paused_at, resume_at=resume_at,
                           reason=reason, severity=severity, active=True)
         self.session.add(pause)
@@ -538,6 +555,63 @@ class RiskPauseRepository:
         for p in pauses:
             p.active = False
         self.session.flush()
+
+    def deactivate_expired(self) -> int:
+        """Desactiva las pausas active=True que ya expiraron (resume_at <= now).
+
+        Las pausas permanentes (resume_at IS NULL) se preservan: representan
+        bloqueos definitivos como el kill switch.
+
+        Returns:
+            Número de pausas desactivadas.
+        """
+        now = datetime.now(timezone.utc)
+        stmt = select(RiskPause).where(
+            RiskPause.active == True,
+            RiskPause.resume_at.isnot(None),
+            RiskPause.resume_at <= now,
+        )
+        pauses = list(self.session.scalars(stmt).all())
+        for p in pauses:
+            p.active = False
+        self.session.flush()
+        return len(pauses)
+
+    def count_pauses_by_prefix_since(self, reason_prefix: str, since: datetime) -> int:
+        """Cuenta las pausas cuyo reason empieza por reason_prefix y se crearon
+        (paused_at) en o después de `since`. Cuenta activas e inactivas: refleja
+        cuántas veces se disparó ese límite en la ventana, no cuántas siguen vivas.
+
+        Se usa para la escalada del breaker de pérdidas consecutivas (si se
+        repite demasiado en una ventana, se endurece la pausa).
+        """
+        stmt = select(func.count()).select_from(RiskPause).where(
+            RiskPause.reason.like(f"{reason_prefix}%"),
+            RiskPause.paused_at >= since,
+        )
+        return int(self.session.scalar(stmt) or 0)
+
+    def get_last_expired_pause_by_prefix(self, reason_prefix: str) -> RiskPause | None:
+        """Pausa MÁS RECIENTE (por paused_at) cuyo reason empieza por reason_prefix
+        y que ya expiró (resume_at no nulo y <= now).
+
+        Se usa para obtener el corte temporal tras servir una pausa por
+        consecutive losses: los trades anteriores a esa pausa dejan de contar.
+        No filtra por `active` para seguir encontrando el corte aunque la pausa
+        ya haya sido desactivada por deactivate_expired().
+        """
+        now = datetime.now(timezone.utc)
+        stmt = (
+            select(RiskPause)
+            .where(
+                RiskPause.reason.like(f"{reason_prefix}%"),
+                RiskPause.resume_at.isnot(None),
+                RiskPause.resume_at <= now,
+            )
+            .order_by(RiskPause.paused_at.desc())
+            .limit(1)
+        )
+        return self.session.scalar(stmt)
 
     def get_history(self, limit: int = 50) -> list[RiskPause]:
         stmt = select(RiskPause).order_by(RiskPause.paused_at.desc()).limit(limit)

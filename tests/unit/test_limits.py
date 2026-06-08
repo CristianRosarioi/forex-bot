@@ -133,6 +133,121 @@ class TestCheckConsecutiveLosses:
         assert expected_min <= result.resume_at <= expected_max
 
 
+class TestConsecutiveLossesDeadlockBreak:
+    """Verifica que la racha se cuenta por modo y con corte temporal tras la pausa."""
+
+    def _limits_with_cutoff(self, cutoff, *, consecutive_losses, bot_mode="DEMO",
+                            prior_pauses=0):
+        """Construye RiskLimits con get_session/RiskPauseRepository mockeados para
+        que el cutoff de la última pausa expirada sea `cutoff` (o None) y el conteo
+        de pausas recientes (para la escalada) sea `prior_pauses`."""
+        settings = make_settings(max_consecutive_losses=3)
+        trade_repo = MagicMock()
+        trade_repo.get_consecutive_losses.return_value = consecutive_losses
+        drawdown_repo = MagicMock()
+        limits = RiskLimits(
+            settings=settings,
+            trade_repo=trade_repo,
+            drawdown_repo=drawdown_repo,
+            event_bus=EventBus(),
+            bot_mode=bot_mode,
+        )
+        mock_repo = MagicMock()
+        if cutoff is None:
+            mock_repo.get_last_expired_pause_by_prefix.return_value = None
+        else:
+            pause = MagicMock()
+            pause.paused_at = cutoff
+            mock_repo.get_last_expired_pause_by_prefix.return_value = pause
+        mock_repo.count_pauses_by_prefix_since.return_value = prior_pauses
+        ctx = patch("bot.risk.limits.get_session")
+        repo_ctx = patch("bot.risk.limits.RiskPauseRepository", return_value=mock_repo)
+        return limits, trade_repo, ctx, repo_ctx
+
+    def test_passes_bot_mode_and_cutoff_to_repo(self):
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=5)
+        limits, trade_repo, ctx, repo_ctx = self._limits_with_cutoff(
+            cutoff, consecutive_losses=0, bot_mode="DEMO")
+        with ctx as mock_gs, repo_ctx:
+            mock_gs.return_value.__enter__.return_value = MagicMock()
+            mock_gs.return_value.__exit__.return_value = False
+            result = limits.check_consecutive_losses()
+        trade_repo.get_consecutive_losses.assert_called_once_with(bot_mode="DEMO", since=cutoff)
+        assert result.passed is True
+
+    def test_deadlock_broken_streak_resets_after_pause(self):
+        """Aunque la historia tenga una racha al límite, si el corte deja la racha
+        efectiva por debajo del límite, el check vuelve a pasar."""
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+        # Tras el cutoff, la racha efectiva es 0 → pasa.
+        limits, trade_repo, ctx, repo_ctx = self._limits_with_cutoff(
+            cutoff, consecutive_losses=0)
+        with ctx as mock_gs, repo_ctx:
+            mock_gs.return_value.__enter__.return_value = MagicMock()
+            mock_gs.return_value.__exit__.return_value = False
+            result = limits.check_consecutive_losses()
+        assert result.passed is True
+
+    def test_no_pause_history_uses_none_cutoff(self):
+        limits, trade_repo, ctx, repo_ctx = self._limits_with_cutoff(
+            None, consecutive_losses=1, bot_mode="DEMO")
+        with ctx as mock_gs, repo_ctx:
+            mock_gs.return_value.__enter__.return_value = MagicMock()
+            mock_gs.return_value.__exit__.return_value = False
+            result = limits.check_consecutive_losses()
+        trade_repo.get_consecutive_losses.assert_called_once_with(bot_mode="DEMO", since=None)
+        assert result.passed is True
+
+    def test_cutoff_db_error_fails_open_to_none(self):
+        """Si la consulta del cutoff falla, se usa since=None (cuenta toda la racha)."""
+        settings = make_settings(max_consecutive_losses=3)
+        trade_repo = MagicMock()
+        trade_repo.get_consecutive_losses.return_value = 4
+        limits = RiskLimits(settings, trade_repo, MagicMock(), EventBus(), bot_mode="DEMO")
+        with patch("bot.risk.limits.get_session", side_effect=Exception("DB down")):
+            result = limits.check_consecutive_losses()
+        trade_repo.get_consecutive_losses.assert_called_once_with(bot_mode="DEMO", since=None)
+        assert result.passed is False  # racha completa → bloquea (conservador)
+
+
+class TestConsecutiveLossesEscalation:
+    """M-1: el breaker escala a bloqueo diario si se dispara demasiado en 24h."""
+
+    def _build(self, *, consecutive_losses, prior_pauses):
+        helper = TestConsecutiveLossesDeadlockBreak()
+        return helper._limits_with_cutoff(
+            None, consecutive_losses=consecutive_losses, prior_pauses=prior_pauses)
+
+    def test_no_escalation_below_threshold(self):
+        """1 pausa previa (esta sería la 2ª en 24h) → pausa normal de 4h."""
+        limits, trade_repo, ctx, repo_ctx = self._build(consecutive_losses=3, prior_pauses=1)
+        before = datetime.now(timezone.utc)
+        with ctx as mock_gs, repo_ctx:
+            mock_gs.return_value.__enter__.return_value = MagicMock()
+            mock_gs.return_value.__exit__.return_value = False
+            result = limits.check_consecutive_losses()
+        after = datetime.now(timezone.utc)
+        assert result.passed is False
+        assert before + timedelta(hours=3, minutes=59) <= result.resume_at <= after + timedelta(hours=4, minutes=1)
+        assert "escalated" not in result.reason
+
+    def test_escalates_to_midnight_when_recurrent(self):
+        """2 pausas previas (esta sería la 3ª en 24h) → bloqueo hasta medianoche."""
+        limits, trade_repo, ctx, repo_ctx = self._build(consecutive_losses=3, prior_pauses=2)
+        with ctx as mock_gs, repo_ctx:
+            mock_gs.return_value.__enter__.return_value = MagicMock()
+            mock_gs.return_value.__exit__.return_value = False
+            result = limits.check_consecutive_losses()
+        assert result.passed is False
+        # Escalada = bloqueo hasta medianoche UTC, pero nunca menos que la base 4h (clamp).
+        from bot.risk.limits import _next_midnight_utc
+        now = datetime.now(timezone.utc)
+        expected = max(_next_midnight_utc(), now + timedelta(hours=4))
+        assert abs((result.resume_at - expected).total_seconds()) < 2
+        assert result.resume_at >= now + timedelta(hours=4) - timedelta(seconds=2)
+        assert "escalated" in result.reason
+
+
 class TestCheckDailyDrawdown:
     def test_check_daily_drawdown_pass(self):
         limits = make_limits()
@@ -301,7 +416,12 @@ class TestCheckAll:
 
 
 class TestIsPausedWithDb:
-    """Integration test using real DB."""
+    """Tests de is_paused() sin DB real (mockeando get_session).
+
+    El test de ciclo de vida contra DB real vive ahora en
+    tests/integration/test_risk_limits_db.py, parcheando get_session hacia la
+    DB de TEST (antes hacía init_engine() y mutaba PRODUCCIÓN).
+    """
 
     def test_is_paused_no_engine_returns_true(self):
         """C-02: When DB engine is not initialized, is_paused() must return True (fail-closed)."""
@@ -311,32 +431,6 @@ class TestIsPausedWithDb:
             mock_gs.side_effect = RuntimeError("Engine not initialized")
             result = limits.is_paused()
         assert result is True  # fail-closed
-
-    def test_is_paused_with_real_db(self):
-        """Real DB integration test — requires initialized engine."""
-        from bot.db.session import init_engine, get_session
-        from bot.db.repository import RiskPauseRepository
-        try:
-            init_engine()
-        except Exception:
-            pytest.skip("DB not available")
-
-        # Deactivate any existing pauses first
-        with get_session() as session:
-            repo = RiskPauseRepository(session)
-            repo.deactivate_all()
-
-        limits = make_limits()
-        assert limits.is_paused() is False
-
-        # Create a pause
-        future = datetime.now(timezone.utc) + timedelta(hours=1)
-        limits.pause_until(future, "test pause", "WARNING")
-        assert limits.is_paused() is True
-
-        # Resume
-        limits.resume()
-        assert limits.is_paused() is False
 
 
 # ──────────────────────────────────────────────────────────────────────────────

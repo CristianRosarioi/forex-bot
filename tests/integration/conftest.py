@@ -13,6 +13,7 @@ from bot.db.repository import (
     DrawdownRepository,
     MT5ConnectionRepository,
     OrderRepository,
+    RiskPauseRepository,
     SignalRepository,
     TradeRepository,
 )
@@ -68,7 +69,8 @@ def db_session(test_engine) -> Session:
     try:
         cleanup_session.execute(text("TRUNCATE TABLE trades, orders, signals, "
                                      "drawdown_snapshots, bot_events, "
-                                     "mt5_connection_log, economic_events RESTART IDENTITY CASCADE"))
+                                     "mt5_connection_log, economic_events, "
+                                     "risk_pauses RESTART IDENTITY CASCADE"))
         cleanup_session.commit()
     finally:
         cleanup_session.close()
@@ -84,4 +86,5 @@ def repositories(db_session: Session) -> dict:
         "drawdown": DrawdownRepository(db_session),
         "bot_events": BotEventRepository(db_session),
         "mt5_conn": MT5ConnectionRepository(db_session),
+        "risk_pauses": RiskPauseRepository(db_session),
     }

@@ -16,6 +16,19 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# Prefijo del `reason` de las pausas por pérdidas consecutivas. Se usa tanto para
+# construir el mensaje como para localizar la última pausa expirada de este tipo
+# y derivar el corte temporal (`since`) que rompe el deadlock.
+CONSECUTIVE_LOSSES_REASON_PREFIX = "Max consecutive losses reached"
+
+# Escalada (M-1): si el breaker de pérdidas consecutivas se dispara este número
+# de veces (o más) dentro de la ventana, la pausa deja de ser de 4h y se endurece
+# a un bloqueo hasta la próxima medianoche UTC. Evita que el breaker se vuelva un
+# throttle infinito de "6 pérdidas / 4h" en rachas 100% perdedoras.
+CONSECUTIVE_LOSSES_ESCALATION_COUNT = 3
+CONSECUTIVE_LOSSES_ESCALATION_WINDOW_HOURS = 24
+CONSECUTIVE_LOSSES_PAUSE_HOURS = 4
+
 
 @dataclass
 class LimitCheckResult:
@@ -35,11 +48,15 @@ class RiskLimits:
         trade_repo: "TradeRepository",
         drawdown_repo: "DrawdownRepository",
         event_bus: EventBus,
+        bot_mode: str | None = None,
     ) -> None:
         self._s = settings
         self._trades = trade_repo
         self._drawdowns = drawdown_repo
         self._bus = event_bus
+        # bot_mode permite que la racha de pérdidas se cuente sólo dentro del modo
+        # operativo activo (no mezclar DEMO con PAPER/LIVE).
+        self._bot_mode = bot_mode
 
     # ──────────────────────────────────────────────
     # Checks individuales
@@ -71,17 +88,83 @@ class RiskLimits:
         return LimitCheckResult(passed=True, check_name="daily_trades_limit")
 
     def check_consecutive_losses(self) -> LimitCheckResult:
-        losses = self._trades.get_consecutive_losses()
+        # Corte temporal: si ya se sirvió (y expiró) una pausa por consecutive
+        # losses, los trades anteriores a ella NO cuentan. Así, tras la pausa, la
+        # racha efectiva arranca de cero y el bot puede volver a operar — esto es
+        # lo que rompe el deadlock de re-pausas infinitas.
+        since = self._last_consecutive_pause_cutoff()
+        losses = self._trades.get_consecutive_losses(bot_mode=self._bot_mode, since=since)
         if losses >= self._s.max_consecutive_losses:
-            resume_at = datetime.now(timezone.utc) + timedelta(hours=4)
+            resume_at, escalated = self._consecutive_losses_resume_at()
+            reason = f"{CONSECUTIVE_LOSSES_REASON_PREFIX}: {losses}/{self._s.max_consecutive_losses}"
+            if escalated:
+                reason += " — escalated to daily block (recurrent breaker)"
             return LimitCheckResult(
                 passed=False,
                 check_name="consecutive_losses",
-                reason=f"Max consecutive losses reached: {losses}/{self._s.max_consecutive_losses}",
+                reason=reason,
                 severity="WARNING",
                 resume_at=resume_at,
             )
         return LimitCheckResult(passed=True, check_name="consecutive_losses")
+
+    def _consecutive_losses_resume_at(self) -> tuple[datetime, bool]:
+        """Calcula el resume_at de la pausa por pérdidas consecutivas.
+
+        Escalada (M-1): si en la ventana ya hubo (incluyendo la que se está por
+        crear) >= CONSECUTIVE_LOSSES_ESCALATION_COUNT pausas de este tipo, se
+        endurece a un bloqueo hasta la próxima medianoche UTC. Si no, 4h.
+
+        Returns:
+            (resume_at, escalated)
+        """
+        now = datetime.now(timezone.utc)
+        base_resume = now + timedelta(hours=CONSECUTIVE_LOSSES_PAUSE_HOURS)
+        prior = self._count_recent_consecutive_pauses(CONSECUTIVE_LOSSES_ESCALATION_WINDOW_HOURS)
+        if prior + 1 >= CONSECUTIVE_LOSSES_ESCALATION_COUNT:
+            # Clamp inferior: la escalada NUNCA debe bloquear menos que la pausa
+            # base. Cerca de medianoche UTC, _next_midnight_utc() podría estar a
+            # minutos; en ese caso usamos la base de 4h (max).
+            resume_at = max(_next_midnight_utc(), base_resume)
+            logger.warning(
+                "Consecutive-losses breaker recurrente (%d pausas en %dh) — "
+                "escalando a bloqueo diario hasta %s",
+                prior + 1, CONSECUTIVE_LOSSES_ESCALATION_WINDOW_HOURS, resume_at,
+            )
+            return resume_at, True
+        return base_resume, False
+
+    def _count_recent_consecutive_pauses(self, window_hours: int) -> int:
+        """Número de pausas por consecutive losses creadas en las últimas
+        `window_hours`. Fail-safe: ante error de DB devolvemos 0 (no escala; la
+        orden ya está siendo rechazada por el límite, así que no abre riesgo).
+        """
+        try:
+            with get_session() as session:
+                repo = RiskPauseRepository(session)
+                since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+                return repo.count_pauses_by_prefix_since(CONSECUTIVE_LOSSES_REASON_PREFIX, since)
+        except Exception:
+            logger.exception("Could not count recent consecutive-losses pauses")
+            return 0
+
+    def _last_consecutive_pause_cutoff(self) -> datetime | None:
+        """Devuelve el `paused_at` de la última pausa por consecutive losses que
+        ya expiró, o None si no hay ninguna.
+
+        Fail-SAFE (conservador) ante error de DB: si no se puede consultar el
+        corte, devolvemos None → get_consecutive_losses cuenta TODA la racha →
+        tiende a BLOQUEAR. Nunca debe cambiarse a un comportamiento que oculte
+        pérdidas ante un fallo de DB.
+        """
+        try:
+            with get_session() as session:
+                repo = RiskPauseRepository(session)
+                pause = repo.get_last_expired_pause_by_prefix(CONSECUTIVE_LOSSES_REASON_PREFIX)
+                return pause.paused_at if pause is not None else None
+        except Exception:
+            logger.exception("Could not fetch last consecutive-losses pause cutoff")
+            return None
 
     def check_daily_drawdown(self, current_equity: float, day_start_balance: float) -> LimitCheckResult:
         if day_start_balance <= 0:
@@ -225,22 +308,18 @@ class RiskLimits:
         C-01b: resume_at=None significa pausa permanente (siempre True).
         C-02: En caso de error de DB, retorna True (fail-closed).
         M-06: get_session() hace commit automático al salir, por lo que
-              deactivate_all() queda persistido.
+              deactivate_expired() queda persistido.
+
+        Usa el MISMO camino de limpieza que get_active_pause(): primero
+        deactivate_expired() (desactiva pausas vencidas, preserva permanentes),
+        luego get_active(). Tras la limpieza sólo quedan activas las pausas
+        permanentes o las aún vigentes.
         """
         try:
             with get_session() as session:
                 repo = RiskPauseRepository(session)
-                pause = repo.get_active()
-                if pause is None:
-                    return False
-                # C-01b: permanent pause (resume_at is None) → always paused
-                if pause.resume_at is None:
-                    return True
-                # Expired pause → deactivate (get_session commits on exit)
-                if datetime.now(timezone.utc) >= pause.resume_at:
-                    repo.deactivate_all()
-                    return False
-                return True
+                repo.deactivate_expired()
+                return repo.get_active() is not None
         except Exception:
             # C-02: fail-closed — if we can't check, assume paused
             logger.exception("Could not check risk pause state — assuming PAUSED (fail-safe)")
@@ -252,9 +331,13 @@ class RiskLimits:
         C-03: NO captura excepciones — las deja propagar hacia el caller
         (validate() en OrderValidator) que las maneja de forma fail-closed
         rechazando la orden con severidad CRITICAL.
+
+        Comparte el camino de limpieza con is_paused(): deactivate_expired()
+        antes de get_active(), de modo que nunca devuelve una pausa vencida.
         """
         with get_session() as session:
             repo = RiskPauseRepository(session)
+            repo.deactivate_expired()
             return repo.get_active()
 
     def pause_until(self, resume_at: datetime | None, reason: str, severity: str) -> None:
