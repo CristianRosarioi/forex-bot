@@ -250,6 +250,172 @@ def test_trade_get_consecutive_losses_with_win(repositories: dict) -> None:
     assert repositories["trades"].get_consecutive_losses() == 1
 
 
+def _close_loss(repositories: dict, ticket: int, closed_at: datetime,
+                bot_mode: str = "DEMO", pnl: float = -10.0) -> None:
+    """Crea y cierra un trade perdedor con modo y timestamp explícitos."""
+    order = _make_order(repositories)
+    trade = repositories["trades"].create(
+        _trade_data(order.id, mt5_ticket=ticket, bot_mode=bot_mode,
+                    opened_at=closed_at - timedelta(minutes=1))
+    )
+    repositories["trades"].close(
+        trade_id=trade.id,
+        exit_price=1.08000,
+        closed_at=closed_at,
+        close_reason="SL",
+        pnl_pips=pnl,
+        pnl_currency=pnl,
+    )
+
+
+def test_consecutive_losses_filters_by_bot_mode(repositories: dict) -> None:
+    """bot_mode='DEMO' ignora las pérdidas de PAPER (no contaminan la racha)."""
+    base = _now() - timedelta(hours=1)
+    # 2 pérdidas DEMO y 3 PAPER intercaladas
+    _close_loss(repositories, 400000, base + timedelta(minutes=1), bot_mode="DEMO")
+    _close_loss(repositories, 400001, base + timedelta(minutes=2), bot_mode="PAPER")
+    _close_loss(repositories, 400002, base + timedelta(minutes=3), bot_mode="PAPER")
+    _close_loss(repositories, 400003, base + timedelta(minutes=4), bot_mode="DEMO")
+    _close_loss(repositories, 400004, base + timedelta(minutes=5), bot_mode="PAPER")
+
+    assert repositories["trades"].get_consecutive_losses(bot_mode="DEMO") == 2
+    assert repositories["trades"].get_consecutive_losses(bot_mode="PAPER") == 3
+    # Sin filtro cuenta todo (5)
+    assert repositories["trades"].get_consecutive_losses() == 5
+
+
+def test_consecutive_losses_since_only_counts_after(repositories: dict) -> None:
+    """since=X sólo cuenta trades cerrados después de X."""
+    base = _now() - timedelta(hours=2)
+    _close_loss(repositories, 410000, base + timedelta(minutes=1), bot_mode="DEMO")
+    _close_loss(repositories, 410001, base + timedelta(minutes=2), bot_mode="DEMO")
+    cutoff = base + timedelta(minutes=3)
+    _close_loss(repositories, 410002, base + timedelta(minutes=4), bot_mode="DEMO")
+    _close_loss(repositories, 410003, base + timedelta(minutes=5), bot_mode="DEMO")
+
+    # Toda la historia: 4 pérdidas
+    assert repositories["trades"].get_consecutive_losses(bot_mode="DEMO") == 4
+    # Sólo posteriores al cutoff: 2
+    assert repositories["trades"].get_consecutive_losses(bot_mode="DEMO", since=cutoff) == 2
+
+
+def test_consecutive_losses_since_resets_to_zero_after_pause(repositories: dict) -> None:
+    """Tras una pausa servida (cutoff posterior al último trade), la racha
+    efectiva vuelve a 0 → esto rompe el deadlock."""
+    base = _now() - timedelta(hours=2)
+    for i in range(6):
+        _close_loss(repositories, 420000 + i, base + timedelta(minutes=i), bot_mode="DEMO")
+
+    # La racha bruta es 6 (el límite) — el bot quedaría bloqueado para siempre.
+    assert repositories["trades"].get_consecutive_losses(bot_mode="DEMO") == 6
+    # Pero con un corte posterior a todos los trades, la racha efectiva es 0.
+    cutoff_after_all = base + timedelta(minutes=10)
+    assert repositories["trades"].get_consecutive_losses(bot_mode="DEMO", since=cutoff_after_all) == 0
+
+
+# ─────────────────────────── RiskPauseRepository ─────────────────────────
+
+
+def test_deactivate_expired_preserves_active_and_permanent(repositories: dict) -> None:
+    """deactivate_expired() sólo desactiva pausas vencidas; preserva las vigentes
+    y las permanentes (resume_at IS NULL, p.ej. kill switch).
+
+    Insertamos las filas directamente (sin create_pause) para aislar el método:
+    create_pause ya invoca deactivate_expired internamente.
+    """
+    from bot.db.models import RiskPause
+    from sqlalchemy import select
+    session = repositories["risk_pauses"].session
+    now = _now()
+    session.add_all([
+        # Vencida (debe desactivarse)
+        RiskPause(paused_at=now - timedelta(hours=5), resume_at=now - timedelta(hours=1),
+                  reason="Max consecutive losses reached: 6/6", severity="WARNING", active=True),
+        # Vigente (se preserva)
+        RiskPause(paused_at=now - timedelta(minutes=5), resume_at=now + timedelta(hours=1),
+                  reason="Max consecutive losses reached: 6/6", severity="WARNING", active=True),
+        # Permanente / kill switch (se preserva)
+        RiskPause(paused_at=now - timedelta(hours=2), resume_at=None,
+                  reason="Kill switch triggered", severity="CRITICAL", active=True),
+    ])
+    session.flush()
+
+    deactivated = repositories["risk_pauses"].deactivate_expired()
+    assert deactivated == 1  # sólo la vencida
+
+    still_active = list(session.scalars(
+        select(RiskPause).where(RiskPause.active == True)).all())
+    assert len(still_active) == 2  # vigente + permanente
+    assert all(p.resume_at is None or p.resume_at > now for p in still_active)
+
+
+def test_create_pause_deactivates_prior_expired(repositories: dict) -> None:
+    """Al crear una pausa nueva no se acumulan pausas activas vencidas."""
+    repo = repositories["risk_pauses"]
+    now = _now()
+    # Tres pausas vencidas (simula la fuga histórica)
+    for i in range(3):
+        repo.create_pause(paused_at=now - timedelta(hours=5 - i),
+                          resume_at=now - timedelta(hours=4 - i),
+                          reason="Max consecutive losses reached: 6/6", severity="WARNING")
+    # Una pausa nueva vigente
+    repo.create_pause(paused_at=now, resume_at=now + timedelta(hours=4),
+                      reason="Max consecutive losses reached: 6/6", severity="WARNING")
+
+    from bot.db.models import RiskPause
+    from sqlalchemy import select
+    active = list(repo.session.scalars(select(RiskPause).where(RiskPause.active == True)).all())
+    # Sólo la vigente debe quedar activa
+    assert len(active) == 1
+    assert active[0].resume_at > now
+
+
+def test_get_last_expired_pause_by_prefix(repositories: dict) -> None:
+    """Devuelve la pausa por consecutive losses más reciente que ya expiró."""
+    repo = repositories["risk_pauses"]
+    now = _now()
+    prefix = "Max consecutive losses reached"
+    repo.create_pause(paused_at=now - timedelta(hours=10),
+                      resume_at=now - timedelta(hours=9),
+                      reason=f"{prefix}: 6/6", severity="WARNING")
+    repo.create_pause(paused_at=now - timedelta(hours=5),
+                      resume_at=now - timedelta(hours=4),
+                      reason=f"{prefix}: 6/6", severity="WARNING")
+    # Una pausa de OTRO tipo (no debe seleccionarse)
+    repo.create_pause(paused_at=now - timedelta(hours=1),
+                      resume_at=now - timedelta(minutes=30),
+                      reason="Daily drawdown limit hit", severity="ERROR")
+    # Una pausa de consecutive losses aún vigente (no debe seleccionarse: no ha expirado)
+    repo.create_pause(paused_at=now, resume_at=now + timedelta(hours=1),
+                      reason=f"{prefix}: 6/6", severity="WARNING")
+
+    result = repo.get_last_expired_pause_by_prefix(prefix)
+    assert result is not None
+    # La más reciente expirada de ese prefijo es la de hace 5 horas
+    assert abs((result.paused_at - (now - timedelta(hours=5))).total_seconds()) < 2
+
+
+def test_count_pauses_by_prefix_since(repositories: dict) -> None:
+    """Cuenta pausas por prefijo dentro de la ventana, activas e inactivas."""
+    repo = repositories["risk_pauses"]
+    now = _now()
+    prefix = "Max consecutive losses reached"
+    # 2 dentro de la ventana de 24h
+    repo.create_pause(paused_at=now - timedelta(hours=3), resume_at=now - timedelta(hours=2),
+                      reason=f"{prefix}: 6/6", severity="WARNING")
+    repo.create_pause(paused_at=now - timedelta(hours=1), resume_at=now + timedelta(hours=3),
+                      reason=f"{prefix}: 6/6", severity="WARNING")
+    # 1 fuera de la ventana (hace 30h)
+    repo.create_pause(paused_at=now - timedelta(hours=30), resume_at=now - timedelta(hours=29),
+                      reason=f"{prefix}: 6/6", severity="WARNING")
+    # 1 de otro tipo dentro de la ventana (no debe contar)
+    repo.create_pause(paused_at=now - timedelta(hours=2), resume_at=now - timedelta(hours=1),
+                      reason="Daily drawdown limit hit", severity="ERROR")
+
+    since = now - timedelta(hours=24)
+    assert repo.count_pauses_by_prefix_since(prefix, since) == 2
+
+
 # ─────────────────────────── DrawdownRepository ─────────────────────────
 
 

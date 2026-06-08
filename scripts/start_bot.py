@@ -75,6 +75,7 @@ def build_engine() -> TradingEngine:
         trade_repo=trade_repo,
         drawdown_repo=drawdown_repo,
         event_bus=bus,
+        bot_mode=settings.mode.value,
     )
     validator = OrderValidator(
         settings=settings.risk,

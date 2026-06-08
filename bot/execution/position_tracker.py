@@ -398,7 +398,10 @@ class PositionTracker:
             monthly_pnl = sum(float(t.pnl_currency or 0) for t in month_trades)
 
             open_positions = sum(1 for t in trade_repo.get_open() if t.bot_mode == self._bot_mode)
-            consecutive_losses = trade_repo.get_consecutive_losses()
+            # Telemetría: racha BRUTA histórica del modo (sin el corte temporal
+            # `since` que sí aplica el enforcement en RiskLimits.check_consecutive_losses).
+            # Puede ser mayor que la racha efectiva tras servir una pausa.
+            consecutive_losses = trade_repo.get_consecutive_losses(bot_mode=self._bot_mode)
 
             daily_dd = max(0.0, -daily_pnl / balance * 100) if balance > 0 else 0.0
             weekly_dd = max(0.0, -weekly_pnl / balance * 100) if balance > 0 else 0.0
