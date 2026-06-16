@@ -19,8 +19,8 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-_JPY_PAIRS = {"USDJPY", "GBPJPY", "EURJPY", "CADJPY", "AUDJPY", "NZDJPY", "CHFJPY"}
-_GOLD_SYMBOLS = {"XAUUSD"}
+# pip_size centralizado en bot/core/instruments (oro 0.1 / JPY 0.01 / forex 0.0001).
+from bot.core.instruments import pip_size as _pip_size
 
 BREAKEVEN_TRIGGER_R = 1.0
 BREAKEVEN_BUFFER_PIPS = 3
@@ -28,14 +28,6 @@ BREAKEVEN_MIN_TIME_SECONDS = 3600  # 4 × M15 bars = 60 minutes minimum before m
 
 MAX_TRADE_DURATION_HOURS = 24
 SESSION_CLOSE_MIN_LIFE_SECONDS = 1800  # trade must be at least 30 min old before session close
-
-
-def _pip_size(symbol: str) -> float:
-    if symbol in _GOLD_SYMBOLS:
-        return 0.1
-    if symbol in _JPY_PAIRS:
-        return 0.01
-    return 0.0001
 
 
 class PositionTracker:

@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from bot.core.event_bus import EventBus, EventType
+from bot.core.instruments import pip_size
 from bot.infra.logger import get_logger
 from bot.risk.limits import LimitCheckResult
 
@@ -236,11 +237,16 @@ class OrderValidator:
         spread_max = sym_cfg.get("spread_max")
         if spread_max is None:
             return None  # sin config, no bloqueamos
-        current_spread = self._get_current_spread(req.symbol)
+        # Convención de unidades (ver symbols.yaml): forex en pips; metales e
+        # índices en puntos crudos de MT5 (spread_max=50 para el oro = 50 puntos).
+        sym_type = (sym_cfg.get("type") or "forex").lower()
+        in_points = sym_type in ("metal", "index")
+        current_spread = self._get_current_spread(req.symbol, in_points=in_points)
         if current_spread is not None and current_spread > spread_max:
+            unit = "pts" if in_points else "pips"
             return LimitCheckResult(
                 passed=False, check_name="spread_check",
-                reason=f"Spread too wide for {req.symbol}: {current_spread:.1f} > max {spread_max}",
+                reason=f"Spread too wide for {req.symbol}: {current_spread:.1f} {unit} > max {spread_max}",
                 severity="WARNING",
             )
         return None
@@ -295,15 +301,21 @@ class OrderValidator:
             )
         return None
 
-    def _get_current_spread(self, symbol: str) -> float | None:
-        """H-04: Obtiene el spread actual de MT5 en pips. Retorna None si no disponible."""
+    def _get_current_spread(self, symbol: str, in_points: bool = False) -> float | None:
+        """H-04: Obtiene el spread actual de MT5. Retorna None si no disponible.
+
+        - in_points=False (forex): spread en pips, usando el pip_size correcto del
+          símbolo (oro 0.1 / JPY 0.01 / forex 0.0001) vía bot.core.instruments.
+        - in_points=True (metales/índices): spread crudo de MT5 en puntos
+          (info.spread), sin convertir — la unidad que usa spread_max para esos tipos.
+        """
         try:
             import MetaTrader5 as mt5
             info = mt5.symbol_info(symbol)
             if info is not None:
-                from bot.risk.sizing import _JPY_PAIRS
-                pip_size = 0.01 if symbol.upper() in _JPY_PAIRS else 0.0001
-                return (info.spread * info.point) / pip_size
+                if in_points:
+                    return float(info.spread)
+                return (info.spread * info.point) / pip_size(symbol)
         except Exception:
             pass
         return None

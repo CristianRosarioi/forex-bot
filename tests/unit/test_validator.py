@@ -498,3 +498,47 @@ class TestSpreadCalculation:
         with patch.object(validator, "_get_current_spread", return_value=1.2):
             result = validator.validate(request, make_account_state())
         assert result.approved is True
+
+
+class TestGoldSpread:
+    """El oro usa pip_size=0.1 y compara spread_max en PUNTOS crudos de MT5."""
+
+    def test_gold_spread_forex_path_uses_pip_size_point_one(self):
+        """El cálculo en pips del oro usa pip_size=0.1, no 0.0001 (evita inflar 1000x)."""
+        validator = make_validator()
+        fake_info = MagicMock(spread=30, point=0.01)
+        with patch("MetaTrader5.symbol_info", return_value=fake_info):
+            pips = validator._get_current_spread("XAUUSD", in_points=False)
+        # (30 * 0.01) / 0.1 == 3.0  (con el bug viejo 0.0001 daría 3000)
+        assert pips == pytest.approx(3.0)
+
+    def test_gold_spread_in_points_is_raw_mt5_spread(self):
+        validator = make_validator()
+        fake_info = MagicMock(spread=30, point=0.01)
+        with patch("MetaTrader5.symbol_info", return_value=fake_info):
+            pts = validator._get_current_spread("XAUUSD", in_points=True)
+        assert pts == 30.0
+
+    def test_gold_reasonable_spread_not_rejected(self):
+        """Un spread de oro de 30 puntos NO debe rechazarse con spread_max=50."""
+        validator = make_validator(
+            symbol_config={"XAUUSD": {"type": "metal", "spread_max": 50}}
+        )
+        request = make_request(symbol="XAUUSD")
+        fake_info = MagicMock(spread=30, point=0.01)
+        with patch("MetaTrader5.symbol_info", return_value=fake_info):
+            result = validator._check_spread(request)
+        assert result is None  # no rechazado
+
+    def test_gold_wide_spread_rejected(self):
+        """Un spread de oro de 60 puntos SÍ se rechaza con spread_max=50."""
+        validator = make_validator(
+            symbol_config={"XAUUSD": {"type": "metal", "spread_max": 50}}
+        )
+        request = make_request(symbol="XAUUSD")
+        fake_info = MagicMock(spread=60, point=0.01)
+        with patch("MetaTrader5.symbol_info", return_value=fake_info):
+            result = validator._check_spread(request)
+        assert result is not None
+        assert result.passed is False
+        assert "spread" in result.reason.lower()

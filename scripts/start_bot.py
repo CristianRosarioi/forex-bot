@@ -6,8 +6,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import yaml
+
 from config.settings import settings, BotMode
 from bot.core.event_bus import EventBus
+from bot.core.instruments import GOLD_SYMBOLS
 from bot.core.connector import MT5Connector
 from bot.core.feed import MarketDataFeed
 from bot.core.timeframe_buffer import TimeframeBuffer
@@ -49,7 +52,22 @@ BANNER = """\
 +----------------------------------------------+"""
 
 
-_GOLD_SYMBOLS = ("XAUUSD",)
+_SYMBOLS_YAML = Path(__file__).parent.parent / "config" / "symbols.yaml"
+
+
+def _load_symbol_config() -> dict:
+    """Carga config/symbols.yaml -> dict {símbolo: {...}} para el OrderValidator.
+
+    Sin esto, el validador recibe symbol_config={} y el check de spread queda
+    desactivado (spread_max nunca se lee). Devuelve {} si falla la carga.
+    """
+    try:
+        with open(_SYMBOLS_YAML, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        return cfg.get("symbols", {})
+    except Exception:
+        logger.exception("No se pudo cargar symbols.yaml para el validador (continuando con {})")
+        return {}
 
 
 def _check_gold_symbol(connector: "MT5Connector") -> None:
@@ -62,7 +80,7 @@ def _check_gold_symbol(connector: "MT5Connector") -> None:
     try:
         from bot.core.feed import _load_enabled_symbols
         enabled = set(_load_enabled_symbols())
-        gold_enabled = [s for s in _GOLD_SYMBOLS if s in enabled]
+        gold_enabled = [s for s in GOLD_SYMBOLS if s in enabled]
         if not gold_enabled:
             return
 
@@ -123,6 +141,7 @@ def build_engine() -> TradingEngine:
         event_bus=bus,
         market_calendar=market_calendar,
         economic_calendar=eco_calendar,
+        symbol_config=_load_symbol_config(),  # activa el check de spread (lee spread_max)
         bot_mode=settings.mode.value,
     )
 
