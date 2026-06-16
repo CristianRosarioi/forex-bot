@@ -24,10 +24,15 @@ logger = get_logger(__name__)
 MAX_SLIPPAGE_PIPS = 3
 
 _JPY_PAIRS = {"USDJPY", "GBPJPY", "EURJPY", "CADJPY", "AUDJPY", "NZDJPY", "CHFJPY"}
+_GOLD_SYMBOLS = {"XAUUSD"}
 
 
 def _pip_size(symbol: str) -> float:
-    return 0.01 if symbol in _JPY_PAIRS else 0.0001
+    if symbol in _GOLD_SYMBOLS:
+        return 0.1
+    if symbol in _JPY_PAIRS:
+        return 0.01
+    return 0.0001
 
 
 class VirtualOrderManager:

@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 _JPY_PAIRS = {"USDJPY", "GBPJPY", "EURJPY", "CADJPY", "AUDJPY", "NZDJPY", "CHFJPY"}
+_GOLD_SYMBOLS = {"XAUUSD"}
 
 BREAKEVEN_TRIGGER_R = 1.0
 BREAKEVEN_BUFFER_PIPS = 3
@@ -30,7 +31,11 @@ SESSION_CLOSE_MIN_LIFE_SECONDS = 1800  # trade must be at least 30 min old befor
 
 
 def _pip_size(symbol: str) -> float:
-    return 0.01 if symbol in _JPY_PAIRS else 0.0001
+    if symbol in _GOLD_SYMBOLS:
+        return 0.1
+    if symbol in _JPY_PAIRS:
+        return 0.01
+    return 0.0001
 
 
 class PositionTracker:

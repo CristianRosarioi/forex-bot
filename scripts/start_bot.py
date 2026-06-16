@@ -49,12 +49,48 @@ BANNER = """\
 +----------------------------------------------+"""
 
 
+_GOLD_SYMBOLS = ("XAUUSD",)
+
+
+def _check_gold_symbol(connector: "MT5Connector") -> None:
+    """Verifica que los símbolos de oro habilitados existen en el broker.
+
+    Algunos brokers llaman al oro GOLD o XAUUSD.r en lugar de XAUUSD.
+    Si no existe, loggea un warning claro pero NO crashea: el resto de
+    símbolos sigue operando. Nunca lanza excepción.
+    """
+    try:
+        from bot.core.feed import _load_enabled_symbols
+        enabled = set(_load_enabled_symbols())
+        gold_enabled = [s for s in _GOLD_SYMBOLS if s in enabled]
+        if not gold_enabled:
+            return
+
+        connector.ensure_connected()
+        import MetaTrader5 as mt5
+        for sym in gold_enabled:
+            if mt5.symbol_info(sym) is None:
+                logger.warning(
+                    "Símbolo de oro '%s' NO existe en el broker (symbol_info=None). "
+                    "Verifica el nombre exacto en Pepperstone (puede ser GOLD o %s.r) "
+                    "y deshabilítalo o renómbralo en config/symbols.yaml. "
+                    "El resto de símbolos sigue operando.",
+                    sym, sym,
+                )
+            else:
+                logger.info("Símbolo de oro '%s' confirmado en el broker", sym)
+    except Exception:
+        logger.exception("No se pudo verificar el símbolo de oro al arrancar (continuando)")
+
+
 def build_engine() -> TradingEngine:
     init_engine()
 
     bus = EventBus()
     connector = MT5Connector(settings.mt5, bus)
     buffer = TimeframeBuffer()
+
+    _check_gold_symbol(connector)
 
     feed = MarketDataFeed(
         connector=connector,

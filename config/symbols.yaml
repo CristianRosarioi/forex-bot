@@ -57,6 +57,13 @@ symbols:
     sessions: [london, overlap]
     risk_pct: 0.5
 
+  XAUUSD:
+    enabled: true
+    type: metal
+    spread_max: 50          # el oro tiene spread mucho mayor (en puntos)
+    sessions: [london, new_york, overlap]
+    risk_pct: 0.3           # menor riesgo: el oro es más volátil
+
   US500:
     enabled: false  # activar cuando esté probado
     type: index
