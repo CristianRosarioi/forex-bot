@@ -31,6 +31,7 @@ def shadow_engine():
 
     settings = MagicMock()
     settings.mode.value = "SHADOW"
+    settings.min_confidence_to_trade = 0.0
 
     bars = make_bars(25)
     buffer = MagicMock()

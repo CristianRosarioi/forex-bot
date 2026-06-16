@@ -32,6 +32,7 @@ def _make_signal(direction="BUY"):
 def _make_engine(event_bus, mode="PAPER", order_manager=None):
     settings = MagicMock()
     settings.mode.value = mode
+    settings.min_confidence_to_trade = 0.0
 
     engine = TradingEngine(
         settings=settings,
@@ -74,6 +75,7 @@ class TestPaperModeCallsOrderManager:
             with patch("bot.core.engine.SignalRepository", return_value=repo_mock):
                 strategy_mock = MagicMock()
                 strategy_mock.name = "retest"
+                strategy_mock.analyze.return_value.confidence = 0.9  # numérico para el filtro
                 engine._run_strategy(strategy_mock, MagicMock())
 
         # order_manager.execute not triggered because strategy returned None from mock
