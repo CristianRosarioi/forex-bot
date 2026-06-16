@@ -31,6 +31,7 @@ def make_engine(event_bus: EventBus | None = None) -> tuple[TradingEngine, dict]
 
     settings = MagicMock()
     settings.mode.value = "SHADOW"
+    settings.min_confidence_to_trade = 0.0  # neutraliza el filtro de confianza salvo override
 
     connector = MagicMock()
     feed = MagicMock()
@@ -249,6 +250,82 @@ class TestRunStrategy:
         engine._on_bar_closed({"symbol": "EURUSD", "timeframe": "M15"})
 
         good_strategy.analyze.assert_called_once()
+
+    def test_low_confidence_signal_discarded_before_validation(self):
+        """Signal with confidence < MIN_CONFIDENCE_TO_TRADE is dropped before validation."""
+        engine, mocks = make_engine()
+        mocks["settings"].min_confidence_to_trade = 0.85
+
+        mock_signal = StrategySignal(
+            symbol="EURUSD",
+            timeframe="M15",
+            strategy_name="retest",
+            signal_type="retest",
+            direction="BUY",
+            entry_price=1.1000,
+            sl_price=1.0950,
+            tp_price=1.1100,
+            reason="test",
+            confidence=0.80,  # below 0.85
+        )
+
+        strategy_mock = MagicMock()
+        strategy_mock.name = "retest"
+        strategy_mock.analyze.return_value = mock_signal
+
+        mock_repo = MagicMock()
+        with patch.object(engine, "_get_account_state") as mock_acct:
+            with patch("bot.core.engine.get_session") as mock_session_ctx:
+                mock_cm = MagicMock()
+                mock_cm.__enter__ = MagicMock(return_value=MagicMock())
+                mock_cm.__exit__ = MagicMock(return_value=False)
+                mock_session_ctx.return_value = mock_cm
+                with patch("bot.core.engine.SignalRepository", return_value=mock_repo):
+                    engine._run_strategy(strategy_mock, MagicMock())
+
+        # Account state never queried, validator never called
+        mock_acct.assert_not_called()
+        mocks["validator"].validate.assert_not_called()
+
+        # Persisted with rejection_reason="low_confidence"
+        mock_repo.create.assert_called_once()
+        call_args = mock_repo.create.call_args[0][0]
+        assert call_args["rejection_reason"] == "low_confidence"
+        assert call_args["acted_on"] is False
+
+    def test_confidence_at_threshold_passes(self):
+        """Signal with confidence == threshold is NOT discarded (>= passes)."""
+        engine, mocks = make_engine()
+        mocks["settings"].min_confidence_to_trade = 0.85
+
+        mock_signal = StrategySignal(
+            symbol="EURUSD",
+            timeframe="M15",
+            strategy_name="retest",
+            signal_type="retest",
+            direction="BUY",
+            entry_price=1.1000,
+            sl_price=1.0950,
+            tp_price=1.1100,
+            reason="test",
+            confidence=0.85,
+        )
+
+        strategy_mock = MagicMock()
+        strategy_mock.name = "retest"
+        strategy_mock.analyze.return_value = mock_signal
+
+        with patch.object(engine, "_get_account_state", return_value=None) as mock_acct:
+            with patch("bot.core.engine.get_session") as mock_session_ctx:
+                mock_cm = MagicMock()
+                mock_cm.__enter__ = MagicMock(return_value=MagicMock())
+                mock_cm.__exit__ = MagicMock(return_value=False)
+                mock_session_ctx.return_value = mock_cm
+                with patch("bot.core.engine.SignalRepository", return_value=MagicMock()):
+                    engine._run_strategy(strategy_mock, MagicMock())
+
+        # Got past the confidence filter → tried to fetch account state
+        mock_acct.assert_called_once()
 
     def test_no_signal_when_account_unavailable(self):
         """If _get_account_state returns None, no DB write or publish."""

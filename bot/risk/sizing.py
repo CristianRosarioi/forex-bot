@@ -4,6 +4,7 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_DOWN
 from typing import TYPE_CHECKING
 
+from bot.core.instruments import pip_size as _pip_size, pip_digits as _pip_digits
 from bot.infra.logger import get_logger
 
 if TYPE_CHECKING:
@@ -12,21 +13,16 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# Grupos de correlación direccional
+# Grupos de correlación direccional.
+# XAUUSD (oro) es una apuesta anti-dólar: sube cuando el USD se debilita, igual
+# que los longs de EURUSD/GBPUSD/AUDUSD. Por eso entra en EUR_USD_GROUP, para que
+# abrir oro + un par anti-dólar en la MISMA dirección reduzca el sizing (Regla #9).
 CORRELATED_GROUPS: dict[str, list[str]] = {
-    "EUR_USD_GROUP": ["EURUSD", "GBPUSD", "AUDUSD", "NZDUSD"],
+    "EUR_USD_GROUP": ["EURUSD", "GBPUSD", "AUDUSD", "NZDUSD", "XAUUSD"],
     "USD_PAIRS_INVERSE": ["USDJPY", "USDCAD", "USDCHF"],
     "INDICES": ["US500", "NAS100"],
     "JPY_CROSSES": ["GBPJPY", "EURJPY"],
 }
-
-# Número de decimales de pip por símbolo (pips normales = 4 para forex, 2 para JPY)
-_JPY_PAIRS = {"USDJPY", "GBPJPY", "EURJPY", "CADJPY", "AUDJPY", "NZDJPY", "CHFJPY"}
-
-
-def _pip_digits(symbol: str) -> int:
-    """Retorna cuántos decimales tiene 1 pip para el símbolo."""
-    return 2 if symbol.upper() in _JPY_PAIRS else 4
 
 
 def _get_correlated_group(symbol: str) -> list[str] | None:
@@ -75,9 +71,11 @@ class PositionSizer:
         entry = Decimal(str(entry_price))
         sl = Decimal(str(sl_price))
 
-        # 1. Pips de riesgo
+        # 1. Pips de riesgo (pip_size centralizado: oro 0.1 / JPY 0.01 / forex 0.0001).
+        # Nota: pip_size se cancela en el cálculo de lotaje (paso 3-4), pero se usa
+        # aquí para que el log de pips_at_risk sea correcto por símbolo (incl. oro).
         price_diff = abs(entry - sl)
-        pip_size = Decimal("0.01") if sym in _JPY_PAIRS else Decimal("0.0001")
+        pip_size = Decimal(str(_pip_size(sym)))
         pips_at_risk = price_diff / pip_size
 
         logger.debug("Sizing %s: entry=%s sl=%s price_diff=%s pips_at_risk=%s",

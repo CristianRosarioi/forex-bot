@@ -1,5 +1,5 @@
 # Configuración por símbolo
-# Spread en pips para forex, en puntos para índices
+# Spread en pips para forex; en puntos crudos de MT5 para metales e índices
 symbols:
   EURUSD:
     enabled: true
@@ -18,19 +18,19 @@ symbols:
   USDJPY:
     enabled: true
     type: forex
-    spread_max: 2.0
+    spread_max: 3.0  # ~2-3 pips normales en demo; 2.0 rechazaba spreads normales
     sessions: [tokyo, london, new_york, overlap]
     risk_pct: 0.5
 
   AUDUSD:
-    enabled: true
+    enabled: false  # deshabilitado: acumuló la mayoría de pérdidas en DEMO
     type: forex
     spread_max: 2.5
     sessions: [tokyo, london, overlap]
     risk_pct: 0.5
 
   NZDUSD:
-    enabled: true
+    enabled: false  # deshabilitado: acumuló la mayoría de pérdidas en DEMO
     type: forex
     spread_max: 3.0
     sessions: [tokyo, london, overlap]
@@ -39,23 +39,30 @@ symbols:
   USDCAD:
     enabled: true
     type: forex
-    spread_max: 2.5
+    spread_max: 3.0  # ~2-3 pips normales en demo
     sessions: [london, new_york, overlap]
     risk_pct: 0.5
 
   GBPJPY:
     enabled: true
     type: forex
-    spread_max: 4.0
+    spread_max: 6.0  # cross volátil: spread normal 3-7 pips; 4.0 rechazaba seguido
     sessions: [tokyo, london, overlap]
     risk_pct: 0.3  # par volátil → menor riesgo
 
   EURGBP:
     enabled: true
     type: forex
-    spread_max: 2.0
+    spread_max: 3.0  # cross: spread normal ~1.5-3 pips, mayor que un major
     sessions: [london, overlap]
     risk_pct: 0.5
+
+  XAUUSD:
+    enabled: true
+    type: metal
+    spread_max: 50          # el oro tiene spread mucho mayor (en puntos)
+    sessions: [london, new_york, overlap]
+    risk_pct: 0.3           # menor riesgo: el oro es más volátil
 
   US500:
     enabled: false  # activar cuando esté probado

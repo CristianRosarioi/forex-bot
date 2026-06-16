@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from bot.core.event_bus import EventBus, EventType
+from bot.core.instruments import pip_size
 from bot.infra.logger import get_logger
 from bot.risk.limits import LimitCheckResult
 
@@ -184,7 +185,20 @@ class OrderValidator:
             return self._reject(worst.reason, worst.severity, failed, request)
 
         # ── 8. CALCULAR SIZING ─────────────────────────────────────────
+        # Fail-closed: sin symbol_info real de MT5 no se puede dimensionar de
+        # forma segura (oro/índices/cruces se calcularían mal). Se rechaza.
         symbol_info = self._build_symbol_info(request.symbol, account_state)
+        if symbol_info is None:
+            check = LimitCheckResult(
+                passed=False,
+                check_name="symbol_info_unavailable",
+                reason=(
+                    f"No symbol_info from MT5 for {request.symbol} — "
+                    "cannot size safely (fail-closed)"
+                ),
+                severity="CRITICAL",
+            )
+            return self._reject(check.reason, check.severity, [check], request)
         symbol_info["direction"] = request.direction
         lots = self._sizer.calculate_lots(
             symbol=request.symbol,
@@ -236,11 +250,16 @@ class OrderValidator:
         spread_max = sym_cfg.get("spread_max")
         if spread_max is None:
             return None  # sin config, no bloqueamos
-        current_spread = self._get_current_spread(req.symbol)
+        # Convención de unidades (ver symbols.yaml): forex en pips; metales e
+        # índices en puntos crudos de MT5 (spread_max=50 para el oro = 50 puntos).
+        sym_type = (sym_cfg.get("type") or "forex").lower()
+        in_points = sym_type in ("metal", "index")
+        current_spread = self._get_current_spread(req.symbol, in_points=in_points)
         if current_spread is not None and current_spread > spread_max:
+            unit = "pts" if in_points else "pips"
             return LimitCheckResult(
                 passed=False, check_name="spread_check",
-                reason=f"Spread too wide for {req.symbol}: {current_spread:.1f} > max {spread_max}",
+                reason=f"Spread too wide for {req.symbol}: {current_spread:.1f} {unit} > max {spread_max}",
                 severity="WARNING",
             )
         return None
@@ -295,21 +314,34 @@ class OrderValidator:
             )
         return None
 
-    def _get_current_spread(self, symbol: str) -> float | None:
-        """H-04: Obtiene el spread actual de MT5 en pips. Retorna None si no disponible."""
+    def _get_current_spread(self, symbol: str, in_points: bool = False) -> float | None:
+        """H-04: Obtiene el spread actual de MT5. Retorna None si no disponible.
+
+        - in_points=False (forex): spread en pips, usando el pip_size correcto del
+          símbolo (oro 0.1 / JPY 0.01 / forex 0.0001) vía bot.core.instruments.
+        - in_points=True (metales/índices): spread crudo de MT5 en puntos
+          (info.spread), sin convertir — la unidad que usa spread_max para esos tipos.
+        """
         try:
             import MetaTrader5 as mt5
             info = mt5.symbol_info(symbol)
             if info is not None:
-                from bot.risk.sizing import _JPY_PAIRS
-                pip_size = 0.01 if symbol.upper() in _JPY_PAIRS else 0.0001
-                return (info.spread * info.point) / pip_size
+                if in_points:
+                    return float(info.spread)
+                return (info.spread * info.point) / pip_size(symbol)
         except Exception:
             pass
         return None
 
-    def _build_symbol_info(self, symbol: str, account_state: dict) -> dict:
-        """Construye el dict de symbol_info para el sizer."""
+    def _build_symbol_info(self, symbol: str, account_state: dict) -> dict | None:
+        """Construye el dict de symbol_info real de MT5 para el sizer.
+
+        FAIL-CLOSED: si MT5 no provee symbol_info (símbolo inexistente, MT5
+        caído, excepción), devuelve None. NUNCA fabrica specs forex genéricas:
+        dimensionar con un contrato adivinado (ej. 100000) sobre/sub-dimensiona
+        instrumentos no-forex (oro, índices, cruces) y desactiva el guard
+        anti-over-size de cruces en sizing.py. Sin specs reales NO se opera.
+        """
         try:
             import MetaTrader5 as mt5
             info = mt5.symbol_info(symbol)
@@ -324,17 +356,8 @@ class OrderValidator:
                     "volume_step": info.volume_step,
                 }
         except Exception:
-            pass
-        # Fallback para tests / sin MT5
-        return {
-            "contract_size": 100000,
-            "point": 0.00001,
-            "tick_value": 1.0,
-            "tick_size": 0.00001,
-            "volume_min": 0.01,
-            "volume_max": 100.0,
-            "volume_step": 0.01,
-        }
+            logger.exception("Error obteniendo symbol_info de MT5 para %s", symbol)
+        return None
 
     def _reject(self, reason: str | None, severity: str | None,
                 failed: list[LimitCheckResult], request: OrderRequest) -> ValidationResult:

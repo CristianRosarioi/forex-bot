@@ -179,6 +179,16 @@ class TradingEngine:
             signal.entry_price, signal.sl_price,
         )
 
+        # Filtro de confianza mínima: descarta señales débiles antes de validar.
+        min_conf = self._settings.min_confidence_to_trade
+        if signal.confidence < min_conf:
+            logger.info(
+                "Signal below confidence threshold: %s conf=%.2f < %.2f — skipped",
+                signal.symbol, signal.confidence, min_conf,
+            )
+            self._persist_signal(signal, rejection_reason="low_confidence")
+            return
+
         account_state = self._get_account_state()
         if account_state is None:
             logger.warning("Cannot validate signal: account state unavailable")

@@ -6,8 +6,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import yaml
+
 from config.settings import settings, BotMode
 from bot.core.event_bus import EventBus
+from bot.core.instruments import GOLD_SYMBOLS
 from bot.core.connector import MT5Connector
 from bot.core.feed import MarketDataFeed
 from bot.core.timeframe_buffer import TimeframeBuffer
@@ -49,12 +52,63 @@ BANNER = """\
 +----------------------------------------------+"""
 
 
+_SYMBOLS_YAML = Path(__file__).parent.parent / "config" / "symbols.yaml"
+
+
+def _load_symbol_config() -> dict:
+    """Carga config/symbols.yaml -> dict {símbolo: {...}} para el OrderValidator.
+
+    Sin esto, el validador recibe symbol_config={} y el check de spread queda
+    desactivado (spread_max nunca se lee). Devuelve {} si falla la carga.
+    """
+    try:
+        with open(_SYMBOLS_YAML, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        return cfg.get("symbols", {})
+    except Exception:
+        logger.exception("No se pudo cargar symbols.yaml para el validador (continuando con {})")
+        return {}
+
+
+def _check_gold_symbol(connector: "MT5Connector") -> None:
+    """Verifica que los símbolos de oro habilitados existen en el broker.
+
+    Algunos brokers llaman al oro GOLD o XAUUSD.r en lugar de XAUUSD.
+    Si no existe, loggea un warning claro pero NO crashea: el resto de
+    símbolos sigue operando. Nunca lanza excepción.
+    """
+    try:
+        from bot.core.feed import _load_enabled_symbols
+        enabled = set(_load_enabled_symbols())
+        gold_enabled = [s for s in GOLD_SYMBOLS if s in enabled]
+        if not gold_enabled:
+            return
+
+        connector.ensure_connected()
+        import MetaTrader5 as mt5
+        for sym in gold_enabled:
+            if mt5.symbol_info(sym) is None:
+                logger.warning(
+                    "Símbolo de oro '%s' NO existe en el broker (symbol_info=None). "
+                    "Verifica el nombre exacto en Pepperstone (puede ser GOLD o %s.r) "
+                    "y deshabilítalo o renómbralo en config/symbols.yaml. "
+                    "El resto de símbolos sigue operando.",
+                    sym, sym,
+                )
+            else:
+                logger.info("Símbolo de oro '%s' confirmado en el broker", sym)
+    except Exception:
+        logger.exception("No se pudo verificar el símbolo de oro al arrancar (continuando)")
+
+
 def build_engine() -> TradingEngine:
     init_engine()
 
     bus = EventBus()
     connector = MT5Connector(settings.mt5, bus)
     buffer = TimeframeBuffer()
+
+    _check_gold_symbol(connector)
 
     feed = MarketDataFeed(
         connector=connector,
@@ -87,6 +141,7 @@ def build_engine() -> TradingEngine:
         event_bus=bus,
         market_calendar=market_calendar,
         economic_calendar=eco_calendar,
+        symbol_config=_load_symbol_config(),  # activa el check de spread (lee spread_max)
         bot_mode=settings.mode.value,
     )
 

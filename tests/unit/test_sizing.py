@@ -283,8 +283,16 @@ class TestCorrelatedGroups:
         assert "GBPUSD" in group
 
     def test_get_correlated_group_unknown(self):
-        group = _get_correlated_group("XAUUSD")
+        group = _get_correlated_group("EURCHF")  # no pertenece a ningún grupo
         assert group is None
+
+    def test_gold_belongs_to_correlation_group(self):
+        """XAUUSD ahora participa en correlación (Regla #9): cesta anti-dólar."""
+        group = _get_correlated_group("XAUUSD")
+        assert group is not None
+        assert "XAUUSD" in group
+        # Correlaciona positivamente con los longs anti-dólar
+        assert "EURUSD" in group
 
 
 # ──────────────────────────────────────────────────────────────────────────────
