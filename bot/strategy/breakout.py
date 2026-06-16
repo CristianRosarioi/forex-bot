@@ -11,6 +11,9 @@ from bot.infra.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Filtro duro: si está activo, descarta señales que van contra la tendencia H4/D1.
+REQUIRE_TREND_ALIGNMENT = True
+
 MIN_TOUCHES_BEFORE_BREAK = 2
 BREAKOUT_BODY_MIN_PCT = 0.50
 BREAKOUT_BUFFER_PCT = 0.02 / 100       # close must exceed level by 0.02%
@@ -89,6 +92,14 @@ class BreakoutStrategy(BaseStrategy):
             # Momentum filter: body must dominate the candle
             body_pct = abs(bar_close - bar_open) / candle_range
             if body_pct < BREAKOUT_BODY_MIN_PCT:
+                continue
+
+            # Filtro duro de tendencia: breakout NUNCA opera contra H4/D1.
+            if REQUIRE_TREND_ALIGNMENT and not is_aligned_with_trend(direction, ctx.trend):
+                logger.info(
+                    "Breakout %s %s skipped: counter-trend (h4=%s d1=%s)",
+                    ctx.symbol, direction, ctx.trend.h4_bias, ctx.trend.d1_bias,
+                )
                 continue
 
             # Confidence

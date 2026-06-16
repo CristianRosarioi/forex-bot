@@ -203,20 +203,30 @@ class TestBreakoutBuy:
 
         assert BreakoutStrategy().analyze(ctx) is None
 
-    def test_confidence_base_no_extras(self):
-        """No trend/volume boost → confidence == 0.65."""
+    def test_confidence_minimum_with_trend_only(self):
+        """Aligned trend (mandatory now) but no volume/body boost → confidence == 0.75.
+
+        Con REQUIRE_TREND_ALIGNMENT=True una señal sin alineación se descarta,
+        así que la confianza mínima alcanzable es base 0.65 + 0.10 por tendencia.
+        """
         level = make_unbroken_level(price=1.1020, level_type="resistance", last_touch_at=1015)
         bars = make_bars(last_open=1.1015, last_high=1.1040, last_low=1.1010, last_close=1.1035)
-        ctx = make_ctx(bars, levels=[level], trend=make_trend("ranging", "ranging"), volume=make_volume("low"))
+        # trend aligned (bullish) → +0.10; low volume → no boost; body 0.67 < 0.70 → no boost
+        ctx = make_ctx(bars, levels=[level], trend=make_trend("bullish", "bullish"), volume=make_volume("low"))
 
         signal = BreakoutStrategy().analyze(ctx)
 
-        # Low volume is still "supportive" (quality != "low" is False... wait no)
-        # is_volume_supportive returns quality != "low" → False for "low"
-        # trend ranging → is_aligned_with_trend("BUY", ranging_trend) → False
-        # body = 0.67 >= 0.70 → False (barely)
         assert signal is not None
-        assert signal.confidence == pytest.approx(0.65)
+        assert signal.confidence == pytest.approx(0.75)
+
+    def test_counter_trend_breakout_is_filtered(self):
+        """REQUIRE_TREND_ALIGNMENT: breakout contra la tendencia se descarta."""
+        level = make_unbroken_level(price=1.1020, level_type="resistance", last_touch_at=1015)
+        bars = make_bars(last_open=1.1015, last_high=1.1040, last_low=1.1010, last_close=1.1035)
+        # BUY breakout but trend is bearish → counter-trend → no signal
+        ctx = make_ctx(bars, levels=[level], trend=make_trend("bearish", "bearish"))
+
+        assert BreakoutStrategy().analyze(ctx) is None
 
     def test_confidence_boosted_by_trend_and_volume(self):
         """Aligned trend + high volume → confidence >= 0.85."""
@@ -257,7 +267,8 @@ class TestBreakoutSell:
         """SL must be placed just above the broken support level."""
         level = make_unbroken_level(price=1.1000, level_type="support", last_touch_at=1015)
         bars = make_bars(last_open=1.1010, last_high=1.1015, last_low=1.0975, last_close=1.0985)
-        ctx = make_ctx(bars, levels=[level])
+        # SELL breakdown requires bearish trend to pass REQUIRE_TREND_ALIGNMENT
+        ctx = make_ctx(bars, levels=[level], trend=make_trend("bearish", "bearish"))
 
         signal = BreakoutStrategy().analyze(ctx)
 

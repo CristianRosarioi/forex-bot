@@ -205,6 +205,28 @@ class TestRetestStrategyBullish:
         assert signal.confidence >= 0.9
 
 
+    def test_counter_trend_retest_is_filtered(self):
+        """REQUIRE_TREND_ALIGNMENT: a BUY retest against a bearish trend is discarded."""
+        level_price = 1.1020
+        broken_at = 1005
+        n = 20
+        bars_data = {
+            "time": list(range(1000, 1000 + n)),
+            "open": [1.1000] * (n - 1) + [1.1015],
+            "high": [1.1010] * (n - 1) + [1.1035],
+            "low": [1.0990] * (n - 1) + [1.1018],
+            "close": [1.1005] * (n - 1) + [1.1030],
+            "tick_volume": [100] * n,
+        }
+        bars = pd.DataFrame(bars_data)
+        level = make_resistance_level(level_price, broken_at, pre_touches=2)
+        # Valid BUY setup but trend is bearish on both timeframes → counter-trend
+        ctx = make_ctx(bars, levels=[level], trend=make_trend("bearish", "bearish"))
+
+        signal = RetestStrategy().analyze(ctx)
+        assert signal is None
+
+
 class TestRetestStrategyBearish:
     """Test 5: bearish retest setup."""
 

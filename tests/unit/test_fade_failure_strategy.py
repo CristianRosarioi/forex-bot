@@ -130,6 +130,22 @@ class TestFadeSell:
         assert signal.strategy_name == "fade_failure"
         assert signal.signal_type == "fade"
 
+    def test_fade_operates_counter_trend(self):
+        """Fade is a liquidity trap: it MUST still fire against the trend (no alignment filter).
+
+        A SELL fade with a bullish H4/D1 trend is counter-trend by nature and
+        must NOT be discarded (unlike retest/breakout).
+        """
+        level = make_unbroken_level(price=1.1020, level_type="resistance", last_touch_at=1015)
+        bars = self._resistance_fade_bars()
+        # Bullish trend → counter-trend for a SELL, but fade should still fire
+        ctx = make_ctx(bars, levels=[level], trend=make_trend("bullish", "bullish"))
+
+        signal = FadeFailureStrategy().analyze(ctx)
+
+        assert signal is not None
+        assert signal.direction == "SELL"
+
     def test_sl_above_wick_high(self):
         """SL must be above the wick high (bar_high + buffer)."""
         level = make_unbroken_level(price=1.1020, level_type="resistance", last_touch_at=1015)

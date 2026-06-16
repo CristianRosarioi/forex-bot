@@ -6,10 +6,14 @@ from datetime import datetime, timedelta
 
 from bot.strategy.base import BaseStrategy, StrategyContext, Signal
 from bot.analysis.levels import Level
+from bot.analysis.trend import is_aligned_with_trend
 from bot.analysis.volume import is_volume_supportive
 from bot.infra.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Filtro duro: si está activo, descarta señales que van contra la tendencia H4/D1.
+REQUIRE_TREND_ALIGNMENT = True
 
 # Configuration constants (will move to yaml later)
 MIN_TOUCHES_BEFORE_BREAK = 1
@@ -101,6 +105,14 @@ class RetestStrategy(BaseStrategy):
                 direction = "BUY"
             else:
                 direction = "SELL"
+
+            # Filtro duro de tendencia: retest NUNCA opera contra H4/D1.
+            if REQUIRE_TREND_ALIGNMENT and not is_aligned_with_trend(direction, ctx.trend):
+                logger.info(
+                    "Retest %s %s skipped: counter-trend (h4=%s d1=%s)",
+                    ctx.symbol, direction, ctx.trend.h4_bias, ctx.trend.d1_bias,
+                )
+                continue
 
             # d. Check last bar retested the level
             level_price = level.price
