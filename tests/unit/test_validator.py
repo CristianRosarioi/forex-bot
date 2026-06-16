@@ -95,6 +95,33 @@ def make_validator(
     )
 
 
+def _fake_symbol_info():
+    """Fake symbol_info de MT5 (simula MT5 vivo) para que el sizing fail-closed
+    no rechace en tests que esperan aprobación. Specs forex genéricas."""
+    info = MagicMock()
+    info.trade_contract_size = 100000
+    info.point = 0.00001
+    info.trade_tick_value = 1.0
+    info.trade_tick_size = 0.00001
+    info.volume_min = 0.01
+    info.volume_max = 100.0
+    info.volume_step = 0.01
+    info.spread = 10
+    return info
+
+
+@pytest.fixture(autouse=True)
+def _mt5_live_symbol_info():
+    """Por defecto el validador 've' MT5 vivo con symbol_info real.
+
+    El validador es fail-closed: sin symbol_info rechaza la orden. Antes había
+    un fallback forex que ahora se eliminó, así que los tests deben simular MT5
+    vivo. Los tests del caso 'sin symbol_info' lo sobrescriben con su propio patch.
+    """
+    with patch("MetaTrader5.symbol_info", return_value=_fake_symbol_info()):
+        yield
+
+
 class TestSlValidation:
     def test_missing_sl_rejected_critical(self):
         """SL=None must be rejected with CRITICAL severity."""
@@ -498,6 +525,46 @@ class TestSpreadCalculation:
         with patch.object(validator, "_get_current_spread", return_value=1.2):
             result = validator.validate(request, make_account_state())
         assert result.approved is True
+
+
+class TestSymbolInfoFailClosed:
+    """Sin symbol_info real de MT5, el validador NO dimensiona como forex: rechaza."""
+
+    def test_no_symbol_info_rejects_fail_closed(self):
+        """Sin symbol_info, la orden se rechaza (CRITICAL) en vez de abrirse."""
+        validator = make_validator()
+        request = make_request(symbol="XAUUSD")
+        with patch("MetaTrader5.symbol_info", return_value=None):
+            result = validator.validate(request, make_account_state())
+        assert result.approved is False
+        assert result.rejection_severity == "CRITICAL"
+        assert "symbol_info" in result.rejection_reason.lower()
+
+    def test_no_symbol_info_does_not_size_as_forex(self):
+        """Sin symbol_info NO se llama al sizer (no se adivina con specs forex)."""
+        validator = make_validator()
+        request = make_request(symbol="XAUUSD")
+        with patch("MetaTrader5.symbol_info", return_value=None):
+            validator.validate(request, make_account_state())
+        validator._sizer.calculate_lots.assert_not_called()
+
+    def test_mt5_exception_also_fails_closed(self):
+        """Si symbol_info lanza excepción, también se rechaza (no fallback)."""
+        validator = make_validator()
+        request = make_request(symbol="EURUSD")
+        with patch("MetaTrader5.symbol_info", side_effect=RuntimeError("MT5 down")):
+            result = validator.validate(request, make_account_state())
+        assert result.approved is False
+        assert result.rejection_severity == "CRITICAL"
+
+    def test_forex_with_symbol_info_still_approved(self):
+        """Con MT5 vivo (symbol_info real), un forex normal sigue aprobándose igual."""
+        validator = make_validator(lots=Decimal("0.25"))
+        request = make_request(symbol="EURUSD")
+        with patch("MetaTrader5.symbol_info", return_value=_fake_symbol_info()):
+            result = validator.validate(request, make_account_state())
+        assert result.approved is True
+        assert result.calculated_lots == Decimal("0.25")
 
 
 class TestGoldSpread:

@@ -185,7 +185,20 @@ class OrderValidator:
             return self._reject(worst.reason, worst.severity, failed, request)
 
         # ── 8. CALCULAR SIZING ─────────────────────────────────────────
+        # Fail-closed: sin symbol_info real de MT5 no se puede dimensionar de
+        # forma segura (oro/índices/cruces se calcularían mal). Se rechaza.
         symbol_info = self._build_symbol_info(request.symbol, account_state)
+        if symbol_info is None:
+            check = LimitCheckResult(
+                passed=False,
+                check_name="symbol_info_unavailable",
+                reason=(
+                    f"No symbol_info from MT5 for {request.symbol} — "
+                    "cannot size safely (fail-closed)"
+                ),
+                severity="CRITICAL",
+            )
+            return self._reject(check.reason, check.severity, [check], request)
         symbol_info["direction"] = request.direction
         lots = self._sizer.calculate_lots(
             symbol=request.symbol,
@@ -320,8 +333,15 @@ class OrderValidator:
             pass
         return None
 
-    def _build_symbol_info(self, symbol: str, account_state: dict) -> dict:
-        """Construye el dict de symbol_info para el sizer."""
+    def _build_symbol_info(self, symbol: str, account_state: dict) -> dict | None:
+        """Construye el dict de symbol_info real de MT5 para el sizer.
+
+        FAIL-CLOSED: si MT5 no provee symbol_info (símbolo inexistente, MT5
+        caído, excepción), devuelve None. NUNCA fabrica specs forex genéricas:
+        dimensionar con un contrato adivinado (ej. 100000) sobre/sub-dimensiona
+        instrumentos no-forex (oro, índices, cruces) y desactiva el guard
+        anti-over-size de cruces en sizing.py. Sin specs reales NO se opera.
+        """
         try:
             import MetaTrader5 as mt5
             info = mt5.symbol_info(symbol)
@@ -336,17 +356,8 @@ class OrderValidator:
                     "volume_step": info.volume_step,
                 }
         except Exception:
-            pass
-        # Fallback para tests / sin MT5
-        return {
-            "contract_size": 100000,
-            "point": 0.00001,
-            "tick_value": 1.0,
-            "tick_size": 0.00001,
-            "volume_min": 0.01,
-            "volume_max": 100.0,
-            "volume_step": 0.01,
-        }
+            logger.exception("Error obteniendo symbol_info de MT5 para %s", symbol)
+        return None
 
     def _reject(self, reason: str | None, severity: str | None,
                 failed: list[LimitCheckResult], request: OrderRequest) -> ValidationResult:
