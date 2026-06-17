@@ -106,14 +106,6 @@ class RetestStrategy(BaseStrategy):
             else:
                 direction = "SELL"
 
-            # Filtro duro de tendencia: retest NUNCA opera contra H4/D1.
-            if REQUIRE_TREND_ALIGNMENT and not is_aligned_with_trend(direction, ctx.trend):
-                logger.info(
-                    "Retest %s %s skipped: counter-trend (h4=%s d1=%s)",
-                    ctx.symbol, direction, ctx.trend.h4_bias, ctx.trend.d1_bias,
-                )
-                continue
-
             # d. Check last bar retested the level
             level_price = level.price
             tol_abs = level_price * BUFFER_PCT_FOR_RETEST
@@ -151,6 +143,17 @@ class RetestStrategy(BaseStrategy):
                 continue
             body_pct = abs(bar_close - bar_open) / candle_range
             if body_pct < REJECTION_BODY_MIN_PCT:
+                continue
+
+            # Filtro duro de tendencia: retest NUNCA opera contra H4/D1. Se evalúa
+            # DESPUÉS de confirmar un setup de retest genuino (d/e/f), para que el
+            # log sea diagnóstico y no ruido por cada nivel en cada barra.
+            if REQUIRE_TREND_ALIGNMENT and not is_aligned_with_trend(direction, ctx.trend):
+                logger.debug(
+                    "Retest %s %s skipped: counter-trend setup at %.5f (%s, h4=%s d1=%s)",
+                    ctx.symbol, direction, level_price, ctx.timeframe,
+                    ctx.trend.h4_bias, ctx.trend.d1_bias,
+                )
                 continue
 
             # g. Compute confidence
