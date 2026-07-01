@@ -75,5 +75,10 @@ class TestEnabledSymbols:
         assert "US500" not in enabled
         assert "NAS100" not in enabled
 
-    def test_gold_is_enabled(self):
-        assert "XAUUSD" in _load_enabled_symbols()
+    def test_gold_is_disabled_until_balance_grows(self):
+        """XAUUSD deshabilitado: con balance ~$975 el sizing da <0.01 lots.
+
+        Para 0.01 lots con SL típico ~$7 haría falta ~0.72% de riesgo (>0.6%),
+        así que se deja fuera hasta tener más balance.
+        """
+        assert "XAUUSD" not in _load_enabled_symbols()

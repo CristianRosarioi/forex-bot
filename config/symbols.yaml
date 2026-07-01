@@ -65,7 +65,12 @@ symbols:
     risk_pct: 0.5
 
   XAUUSD:
-    enabled: true
+    # Deshabilitado: con balance ~$975 el sizing da <0.01 lots y se rechaza.
+    # Para 0.01 lots con SL típico ~$7 (70 pips) haría falta ~0.72% de riesgo,
+    # por encima del techo sano de 0.6%. Reactivar cuando el balance crezca lo
+    # suficiente para 0.01 lots a <=0.6%. (Nota: el risk_pct por símbolo de este
+    # archivo hoy NO lo usa el sizing — usa el global RISK_PCT_PER_TRADE.)
+    enabled: false
     type: metal
     spread_max: 50          # el oro tiene spread mucho mayor (en puntos)
     sessions: [london, new_york, overlap]
