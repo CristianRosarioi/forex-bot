@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     # Umbral mínimo de confianza para que una señal pase a validación.
     # Señales por debajo se descartan y se registran con rejection_reason="low_confidence".
     min_confidence_to_trade: float = Field(
-        default=0.85, ge=0.0, le=1.0, alias="MIN_CONFIDENCE_TO_TRADE"
+        default=0.75, ge=0.0, le=1.0, alias="MIN_CONFIDENCE_TO_TRADE"
     )
 
     mt5: MT5Settings = Field(default_factory=MT5Settings)
