@@ -46,6 +46,15 @@ class TestSettingsLoads:
         from config.settings import settings, BotMode
         assert isinstance(settings.mode, BotMode)
 
+    def test_min_confidence_default_is_075(self):
+        """Day trading activo: umbral por defecto bajado a 0.75 (era 0.85).
+
+        Se valida el default del campo (independiente de .env) para que el
+        filtro no se endurezca por accidente en máquinas sin la variable.
+        """
+        from config.settings import Settings
+        assert Settings.model_fields["min_confidence_to_trade"].default == 0.75
+
 
 class TestRiskSettingsBounds:
     def test_risk_pct_bounds(self):
