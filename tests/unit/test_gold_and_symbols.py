@@ -58,16 +58,22 @@ class TestGoldPipSize:
 
 
 class TestEnabledSymbols:
-    def test_disabled_pairs_not_loaded(self):
-        """NZDUSD y AUDUSD están deshabilitados → no se cargan (no generan señales)."""
+    def test_reactivated_pairs_loaded(self):
+        """NZDUSD y AUDUSD reactivados → vuelven a cargarse (suman volumen)."""
         enabled = _load_enabled_symbols()
-        assert "NZDUSD" not in enabled
-        assert "AUDUSD" not in enabled
+        assert "NZDUSD" in enabled
+        assert "AUDUSD" in enabled
 
     def test_kept_pairs_still_enabled(self):
         enabled = _load_enabled_symbols()
         for sym in ("EURUSD", "GBPUSD", "USDJPY", "USDCAD", "GBPJPY", "EURGBP"):
             assert sym in enabled, f"{sym} debería seguir habilitado"
+
+    def test_indices_still_disabled(self):
+        """US500 y NAS100 siguen deshabilitados hasta estar probados."""
+        enabled = _load_enabled_symbols()
+        assert "US500" not in enabled
+        assert "NAS100" not in enabled
 
     def test_gold_is_enabled(self):
         assert "XAUUSD" in _load_enabled_symbols()
