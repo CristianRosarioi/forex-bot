@@ -1,18 +1,25 @@
 # Configuración por símbolo
 # Spread en pips para forex; en puntos crudos de MT5 para metales e índices
+#
+# Sesiones (UTC, ver bot/core/scheduler.py): tokyo 0-9, london 7-16,
+# new_york 12-21, overlap 12-16. La unión de las cuatro cubre 0-21 UTC
+# (casi 24h de día hábil). Queda un hueco estructural 21:00-24:00 UTC
+# (cierre NY / pre-Tokyo, liquidez fina y cierre del viernes) que no se
+# cubre sin tocar la lógica del scheduler; se deja fuera a propósito.
+# Day trading activo: los forex habilitados usan las cuatro sesiones.
 symbols:
   EURUSD:
     enabled: true
     type: forex
     spread_max: 2.0
-    sessions: [london, new_york, overlap]
+    sessions: [tokyo, london, new_york, overlap]
     risk_pct: 0.5
 
   GBPUSD:
     enabled: true
     type: forex
     spread_max: 2.5
-    sessions: [london, new_york, overlap]
+    sessions: [tokyo, london, new_york, overlap]
     risk_pct: 0.5
 
   USDJPY:
@@ -26,35 +33,35 @@ symbols:
     enabled: true  # reactivado: las pérdidas venían de spread muerto y confianza baja, ya corregidos
     type: forex
     spread_max: 2.5
-    sessions: [tokyo, london, overlap]
+    sessions: [tokyo, london, new_york, overlap]
     risk_pct: 0.5
 
   NZDUSD:
     enabled: true  # reactivado: las pérdidas venían de spread muerto y confianza baja, ya corregidos
     type: forex
     spread_max: 3.0
-    sessions: [tokyo, london, overlap]
+    sessions: [tokyo, london, new_york, overlap]
     risk_pct: 0.5
 
   USDCAD:
     enabled: true
     type: forex
     spread_max: 3.0  # ~2-3 pips normales en demo
-    sessions: [london, new_york, overlap]
+    sessions: [tokyo, london, new_york, overlap]
     risk_pct: 0.5
 
   GBPJPY:
     enabled: true
     type: forex
     spread_max: 6.0  # cross volátil: spread normal 3-7 pips; 4.0 rechazaba seguido
-    sessions: [tokyo, london, overlap]
+    sessions: [tokyo, london, new_york, overlap]
     risk_pct: 0.3  # par volátil → menor riesgo
 
   EURGBP:
     enabled: true
     type: forex
     spread_max: 3.0  # cross: spread normal ~1.5-3 pips, mayor que un major
-    sessions: [london, overlap]
+    sessions: [tokyo, london, new_york, overlap]
     risk_pct: 0.5
 
   XAUUSD:

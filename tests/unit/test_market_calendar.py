@@ -155,6 +155,46 @@ class TestSymbolAllowedInCurrentSession:
         assert cal.symbol_allowed_in_current_session("EURUSD", t) is True
 
 
+class TestForexNear24hCoverage:
+    """Day trading activo: los forex habilitados operan casi 24h de día hábil.
+
+    Se carga el symbols.yaml real y se verifica que cada forex enabled tenga
+    trading permitido en las cuatro sesiones (tokyo/london/overlap/new_york),
+    cubriendo 0-21 UTC. El hueco 21-24 UTC es estructural y se deja fuera.
+    """
+
+    def _real_calendar(self) -> MarketCalendar:
+        cal = make_calendar()
+        cal._symbol_config = cal._load_symbol_config()
+        return cal
+
+    def _enabled_forex(self, cal: MarketCalendar) -> list[str]:
+        return [
+            sym for sym, cfg in cal._symbol_config.items()
+            if cfg.get("enabled") and (cfg.get("type") or "forex").lower() == "forex"
+        ]
+
+    # Un lunes (2024-01-08) a horas representativas de cada sesión.
+    @pytest.mark.parametrize("hour", [3, 10, 13, 18])  # tokyo, london, overlap, new_york
+    def test_all_enabled_forex_allowed_across_the_day(self, hour):
+        cal = self._real_calendar()
+        forex = self._enabled_forex(cal)
+        assert forex, "debería haber forex habilitado"
+        t = dt_utc(2024, 1, 8, hour, 0)
+        for sym in forex:
+            assert cal.symbol_allowed_in_current_session(sym, t) is True, (
+                f"{sym} debería operar a las {hour}:00 UTC "
+                f"(sesión={cal.get_active_session(t)})"
+            )
+
+    def test_reactivated_pairs_cover_new_york(self):
+        # AUDUSD/NZDUSD antes no tenían new_york; ahora sí (18:00 UTC).
+        cal = self._real_calendar()
+        t = dt_utc(2024, 1, 8, 18, 0)
+        assert cal.symbol_allowed_in_current_session("AUDUSD", t) is True
+        assert cal.symbol_allowed_in_current_session("NZDUSD", t) is True
+
+
 class TestNextMarketTimes:
     def test_next_market_open_returns_future(self):
         cal = make_calendar()
